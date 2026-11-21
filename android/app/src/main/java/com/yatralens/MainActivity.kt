@@ -6,6 +6,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -35,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var startTalkButton: Button
     private lateinit var endTripButton: Button
     private lateinit var tripSummary: TextView
+    private lateinit var offlineNotice: TextView
     private lateinit var notice: TextView
     private lateinit var savedEvidence: TextView
     private lateinit var phraseItems: LinearLayout
@@ -110,6 +113,11 @@ class MainActivity : Activity() {
             textSize = 16f
         }
         layout.addView(tripSummary)
+        offlineNotice = TextView(this).apply {
+            textSize = 16f
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        layout.addView(offlineNotice)
         notice = TextView(this).apply {
             textSize = 16f
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
@@ -484,6 +492,23 @@ class MainActivity : Activity() {
         phraseItems = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         evidence.addView(phraseItems)
 
+        val offlineHelp = section(layout, "Offline help", false)
+        offlineHelp.addView(TextView(this).apply {
+            text = "Saved emergency references for Kerala. Confirm the number shown in the dialer before calling. Last checked ${OfflineHelp.REVIEWED_ON}.\nSource: ${OfflineHelp.SOURCE}"
+            textSize = 15f
+            autoLinkMask = Linkify.WEB_URLS
+            movementMethod = LinkMovementMethod.getInstance()
+        })
+        for (contact in OfflineHelp.contacts) {
+            addButton(offlineHelp, "Dial ${contact.label}: ${contact.number}") {
+                try {
+                    startActivity(Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", contact.number, null)))
+                } catch (e: Exception) {
+                    notice.text = "A phone dialer is unavailable on this device."
+                }
+            }
+        }
+
         val diagnostics = section(layout, "Sensor controls & diagnostics", false)
         diagnostics.addView(TextView(this).apply {
             text = "Continuous mode samples the camera during an active trip. Raw frames and audio are discarded. The notification shows which sensors are running."
@@ -621,8 +646,12 @@ class MainActivity : Activity() {
             Triple(id, if (id == null) emptyList() else memory.recentEvidenceItems(id),
                 if (id == null) emptyList() else memory.openConflicts(id))
         }
+        val savedDestination = tripId?.let { id -> TripMemoryStore(this).use { it.latestDestination(id) } }
         savedEvidence.text = if (tripId == null) "No trip memory yet" else
-            "${entries.size} recent evidence items • ${conflicts.size} unresolved conflicts. Saved text is available offline."
+            "${entries.size} recent evidence items • ${conflicts.size} unresolved conflicts. Saved text is available offline." +
+                (savedDestination?.let {
+                    "\nBooking point: ${it.placeName} (${it.latitude}, ${it.longitude}); user entered, unverified."
+                } ?: "")
         for (entry in entries) {
             evidenceItems.addView(TextView(this).apply {
                 text = "${entry.title} • ${entry.observedAt}\n${entry.excerpt}\nSource: ${entry.provider}"
@@ -807,6 +836,12 @@ class MainActivity : Activity() {
             if (weatherResult.text.toString() != weatherText) weatherResult.text = weatherText
             val tripText = "Trip: ${SensorState.get("trip")}\nCamera: ${SensorState.get("camera")} • Mic: ${SensorState.get("microphone")}\nLocation: ${SensorState.get("location")}"
             if (tripSummary.text.toString() != tripText) tripSummary.text = tripText
+            val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+            val online = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+            val offlineText = if (online) "" else
+                "Offline: saved trip memory, phrases and emergency references are available. Live checks need a connection."
+            if (offlineNotice.text.toString() != offlineText) offlineNotice.text = offlineText
             val active = PhysicalContextEngine.situation.value.tripId != null
             startCameraButton.visibility = if (active) View.GONE else View.VISIBLE
             startTalkButton.visibility = if (active) View.GONE else View.VISIBLE
