@@ -818,8 +818,21 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         override fun run() {
             if (!sessionVisible || taskStage.isBlank()) return
             if (SystemClock.elapsedRealtime() - stageStartedMs > 75_000) {
+                val diagnosticKey = when (taskStage) {
+                    "WAIT_TRIP" -> when (planAction) {
+                        "CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD" -> "camera"
+                        "OPEN_TALK" -> "microphone"
+                        else -> "location"
+                    }
+                    "WAIT_WEATHER" -> "weather"
+                    "WAIT_CONVERSATION" -> "spoken turn"
+                    "WAIT_SCENE" -> "scene"
+                    "WAIT_OCR" -> "text scan"
+                    "WAIT_AGREEMENT" -> "agreement"
+                    else -> taskStage.removePrefix("WAIT_")
+                }
                 output.text = "This check took too long. Check the phone's sensor state, then retry.\n" +
-                    SensorState.get("text scan")
+                    SensorState.get(diagnosticKey)
                 taskStage = ""
                 return
             }
@@ -828,8 +841,10 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                     val active = PhysicalContextEngine.situation.value.tripId != null
                     val cameraReady = planAction !in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD") ||
                         PhysicalContextEngine.fresh(SensorKind.CAMERA, 15_000)
-                    val locationReady = planAction !in setOf("OPEN_BOOKING", "OPEN_WEATHER", "OPEN_CULTURE", "OPEN_DISCOVERY") ||
-                        PhysicalContextEngine.fresh(SensorKind.LOCATION, 120_000)
+                    val needsLocation = planAction in setOf("OPEN_BOOKING", "OPEN_WEATHER", "OPEN_CULTURE", "OPEN_DISCOVERY")
+                    val locationReady = !needsLocation ||
+                        (PhysicalContextEngine.fresh(SensorKind.LOCATION, 120_000) &&
+                            (PhysicalContextEngine.situation.value.location?.accuracyM ?: Float.MAX_VALUE) <= 100f)
                     val micReady = planAction != "OPEN_TALK" ||
                         PhysicalContextEngine.fresh(SensorKind.MICROPHONE, 15_000)
                     if (active && cameraReady && locationReady && micReady) {
