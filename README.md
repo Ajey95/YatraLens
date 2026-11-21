@@ -97,6 +97,12 @@ Sarvam supplies **Indian-language and document AI through the consent-gated back
 
 [Sarvam Voice Agents](https://docs.sarvam.ai/voice-agents/overview) is a separate platform that can orchestrate speech, reasoning and telephony. **Outbound AI calling is not part of the current YatraLens prototype**; it would need its own setup, consent flow and live-call validation.
 
+## How Mirage powers on-device vision
+
+[Mirage](https://huggingface.co/Cactus-Compute/mirage) is the image-understanding model bundled in the ARM64 Android build and run through the Cactus runtime. For a **user-selected camera capture**, it returns structured scene, object, text and relationship cues on the phone. YatraLens uses those cues in **F01 Point & Ask** to offer a tentative description. This local scene step does not require uploading the photo to Sarvam. The **F06 Smart Transport** bus-board flow uses a separate OCR crop and source-aware route check.
+
+Mirage's cues are **observations, not proof** of an exact boarding gate, bus route, landmark identity or safe path. The app checks whether a capture is recent and asks the traveller to confirm consequential details. Malayalam sign reading uses the separate, consented Indic OCR path; Mirage's general scene-text output is not presented as validated Malayalam OCR. The bundled files, hashes and licenses are recorded in [third-party model provenance](THIRD_PARTY_MODELS.md).
+
 ## Screenshots and demo video
 
 > Replace these placeholders with **real captures** from the Android build. Label synthetic inputs and fixtures in the demo.
@@ -231,7 +237,7 @@ sequenceDiagram
     App->>Store: Save evidence and provisional claim
     Store->>Store: Compare with booking claim
     alt Material conflict
-      Store-->>App: Both sources; block definitive reminder
+      Store-->>App: Both sources and no definitive reminder
       App-->>Traveller: Ask whether change was confirmed
       Traveller->>App: Resolve or leave unresolved
       App->>Store: Record auditable decision
