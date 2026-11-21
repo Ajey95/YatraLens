@@ -1588,7 +1588,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                     taskStage = ""
                     reviewLanguage = turn.targetLanguage
                     val travellerTurn = turn.owner == "TRAVELLER"
-                    val needsReview = turn.reviewFlags.isNotEmpty()
+                    val needsReview = turn.reviewFlags.isNotEmpty() ||
+                        Regex("[0-9₹]").containsMatchIn(turn.original)
                     if (needsReview) autoConversation = false
                     updateConversationBoard(turn.owner, turn.original, turn.translated)
                     resultTitle.text = if (travellerTurn) "YOU SAID · ${languageName(turn.sourceLanguage)}" else
