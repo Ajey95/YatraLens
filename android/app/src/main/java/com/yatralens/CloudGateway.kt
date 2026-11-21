@@ -1,6 +1,7 @@
 package com.yatralens
 
 import org.json.JSONObject
+import org.json.JSONArray
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -12,7 +13,8 @@ import java.time.Instant
 /** Debug phone-to-local-backend adapter. The Sarvam key never enters the APK. */
 object CloudGateway {
     data class Transcript(val text: String, val language: String?, val model: String)
-    data class OcrResult(val status: String, val text: String, val jobId: String?, val imageSha256: String?)
+    data class OcrResult(val status: String, val text: String, val jobId: String?,
+                         val imageSha256: String?, val language: String, val spans: JSONArray)
     data class Translation(val text: String, val sourceLanguage: String, val targetLanguage: String,
                            val reviewFlags: List<String>)
     data class WeatherAssessment(val decision: String, val reason: String, val sourceUrl: String,
@@ -32,11 +34,12 @@ object CloudGateway {
             if (json.isNull("max_wind_gust_kmh")) null else json.optDouble("max_wind_gust_kmh"))
     }
 
-    fun interpretOcr(text: String, imageSha256: String, targetLanguage: String): JSONObject =
+    fun interpretOcr(text: String, imageSha256: String, sourceLanguage: String,
+                     targetLanguage: String): JSONObject =
         postJson("/v1/ocr/interpret", JSONObject()
             .put("recognized_text", text.take(2000))
             .put("image_sha256", imageSha256)
-            .put("source_language_code", "ml-IN")
+            .put("source_language_code", sourceLanguage)
             .put("target_language_code", targetLanguage))
 
     fun proposeAgreement(transcript: String, owner: String): JSONObject =
@@ -111,8 +114,9 @@ object CloudGateway {
     }
 
     /** Sends only the image the user explicitly captured and approved for OCR. */
-    fun ocrSelectedCrop(jpeg: ByteArray): OcrResult {
+    fun ocrSelectedCrop(jpeg: ByteArray, language: String): OcrResult {
         require(BuildConfig.DEBUG && BuildConfig.DEV_TOKEN.isNotBlank()) { "Debug backend token unavailable" }
+        require(language in setOf("en-IN", "ml-IN", "te-IN", "hi-IN"))
         require(jpeg.size in 1..8_000_000 && jpeg.size >= 3 &&
             jpeg[0] == 0xff.toByte() && jpeg[1] == 0xd8.toByte() && jpeg[2] == 0xff.toByte()) {
             "Selected crop must be a JPEG under 8 MB"
@@ -128,7 +132,7 @@ object CloudGateway {
             connection.setRequestProperty("X-YatraLens-Cloud-Consent", "approved-current-trip")
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             connection.outputStream.use { output ->
-                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nml-IN\r\n".toByteArray())
+                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n$language\r\n".toByteArray())
                 output.write("--$boundary\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nselected_text_crop\r\n".toByteArray())
                 output.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"selected-crop.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".toByteArray())
                 output.write(jpeg)
@@ -140,7 +144,8 @@ object CloudGateway {
             if (status !in 200..299) error("Backend returned HTTP $status")
             val json = JSONObject(content)
             return OcrResult(json.optString("status"), json.optString("text"),
-                json.optString("job_id"), json.optString("image_sha256"))
+                json.optString("job_id"), json.optString("image_sha256"),
+                json.optString("language", language), json.optJSONArray("spans") ?: JSONArray())
         } finally { connection.disconnect() }
     }
 

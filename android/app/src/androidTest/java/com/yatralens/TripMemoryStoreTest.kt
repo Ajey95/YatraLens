@@ -200,5 +200,20 @@ class TripMemoryStoreTest {
         store.endTrip(tripId)
         store.close()
     }
+
+    @Test fun selectedOcrLanguageIsPreservedWithEvidence() {
+        val store = TripMemoryStore(context)
+        val tripId = UUID.randomUUID().toString()
+        store.startTrip(tripId, "TEST_FIXTURE")
+        val evidenceId = store.saveOcrText(tripId, "బస్సు సమయం 15:30", "fixture-hash", "fixture-job",
+            language = "te-IN")
+        store.readableDatabase.rawQuery("""SELECT s.language FROM evidence e
+            JOIN source s ON s.id=e.source_id WHERE e.id=?""", arrayOf(evidenceId)).use {
+            assertEquals(true, it.moveToFirst())
+            assertEquals("te-IN", it.getString(0))
+        }
+        store.endTrip(tripId)
+        store.close()
+    }
 }
 

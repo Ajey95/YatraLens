@@ -104,6 +104,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     @Volatile private var autoTorchOwned = false
     private var cameraStarting = false
     private var pendingOcrCapture = false
+    private var pendingOcrLanguage = "ml-IN"
     private var cameraWanted = false
     private var cameraAllowedForTrip = false
     private var micWanted = false
@@ -202,7 +203,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 if (cameraAllowedForTrip) { cameraWanted = true; startCamera() }
                 if (!speechPreparing && player == null) { micWanted = true; startMic() }
             }
-            CAPTURE_TEXT -> captureText(intent.getBooleanExtra("cloudApproved", false))
+            CAPTURE_TEXT -> captureText(intent.getBooleanExtra("cloudApproved", false),
+                intent.getStringExtra("language") ?: "ml-IN")
             CAPTURE_SCENE -> captureScene()
             SAVE_OCR -> saveOcr(intent.getBooleanExtra("userApproved", false))
             START_TURN -> startTurn(intent)
@@ -250,6 +252,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         SceneState.set(null)
         FeatureState.clear()
         ReviewedEvidenceState.set(null, null)
+        SensorState.setOcrText("")
+        SensorState.set("ocr regions", "")
         postedAlertKeys.clear()
         locationLastMs = 0L
         cameraAllowedForTrip = mode == "CONTINUOUS"
@@ -367,7 +371,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 cameraProvider = provider
                 imageCapture = capture
                 store.record("CAMERA_OPENED")
-                if (pendingOcrCapture) captureText(true)
+                if (pendingOcrCapture) captureText(true, pendingOcrLanguage)
             } catch (e: Exception) {
                 SensorState.set("camera", "interrupted: ${e.javaClass.simpleName}")
                 PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.CAMERA, CaptureState.INTERRUPTED, e.javaClass.simpleName))
@@ -449,15 +453,20 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         captureBusy = false
     }
 
-    private fun captureText(approved: Boolean) {
+    private fun captureText(approved: Boolean, language: String) {
         if (!approved) {
             SensorState.set("text scan", "Separate cloud approval required")
+            return
+        }
+        if (language !in SUPPORTED_TURN_LANGUAGES) {
+            SensorState.set("text scan", "Choose a supported sign language")
             return
         }
         val capture = imageCapture
         if (activeTrip && cameraWanted && capture == null && cameraStarting &&
             power.currentThermalStatus < PowerManager.THERMAL_STATUS_SEVERE) {
             pendingOcrCapture = true
+            pendingOcrLanguage = language
             SensorState.set("text scan", "Waiting for camera to open for selected crop")
             return
         }
@@ -469,6 +478,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val selectedTripId = tripId
         SensorState.set("text scan", "Capturing center text crop")
         SensorState.setOcrText("")
+        SensorState.set("ocr regions", "")
         lastOcr = null
         FeatureState.set("ocr interpretation", null)
         withCaptureLight("text scan", capture) { capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
@@ -493,10 +503,16 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     Thread({
                         try {
                             if (!activeTrip || tripId != selectedTripId) return@Thread
-                            val result = CloudGateway.ocrSelectedCrop(cropBytes)
+                            val result = CloudGateway.ocrSelectedCrop(cropBytes, language)
                             if (!activeTrip || tripId != selectedTripId) return@Thread
                             if (result.status == "COMPLETED" && result.text.isNotBlank()) lastOcr = result
                             SensorState.setOcrText(result.text)
+                            SensorState.set("ocr regions", (0 until minOf(result.spans.length(), 10))
+                                .mapNotNull { index ->
+                                    val span = result.spans.optJSONObject(index) ?: return@mapNotNull null
+                                    val region = span.optJSONArray("bbox_norm")?.toString() ?: "region unavailable"
+                                    "${index + 1}. ${span.optString("text").take(100)} • $region"
+                                }.joinToString("\n"))
                             SensorState.set("text scan", if (result.text.isBlank())
                                 "${result.status}: no text detected; retake or type text"
                                 else "${result.status}; ${result.text.length} characters; review OCR text below")
@@ -575,7 +591,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         try {
-            val evidenceId = memory.saveOcrText(id, result.text, result.imageSha256, result.jobId)
+            val evidenceId = memory.saveOcrText(id, result.text, result.imageSha256,
+                result.jobId, result.language)
             SensorState.set("text scan", "Saved reviewed OCR text as evidence $evidenceId")
             store.record("OCR_TEXT_SAVED", "evidence_id=$evidenceId")
             lastOcr = null
@@ -1004,7 +1021,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         }
         val language = intent.getStringExtra("targetLanguage") ?: "te-IN"
         runCloudFeature("ocr interpretation", intent.getBooleanExtra("cloudApproved", false)) {
-            CloudGateway.interpretOcr(ocr!!.text, ocr.imageSha256!!, language)
+            CloudGateway.interpretOcr(ocr!!.text, ocr.imageSha256!!, ocr.language, language)
         }
     }
 
@@ -1260,6 +1277,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         SceneState.set(null)
         FeatureState.clear()
         ReviewedEvidenceState.set(null, null)
+        SensorState.setOcrText("")
+        SensorState.set("ocr regions", "")
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         for (key in postedAlertKeys) manager.cancel(2000 + (key.hashCode() and 0x7fffffff) % 100000)
         postedAlertKeys.clear()

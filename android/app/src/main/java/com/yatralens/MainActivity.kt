@@ -304,7 +304,10 @@ class MainActivity : Activity() {
             if (cloudConsent.isChecked) {
                 ocrTranslation.setText("")
                 displayedOcrTranslation = ""
-                send(TripSensingService.CAPTURE_TEXT, true)
+                startService(Intent(this, TripSensingService::class.java)
+                    .setAction(TripSensingService.CAPTURE_TEXT)
+                    .putExtra("cloudApproved", true)
+                    .putExtra("language", selectedCode(localLanguage)))
             }
             else notice.text = "Allow selected text to use Sarvam first."
         }
@@ -825,7 +828,7 @@ class MainActivity : Activity() {
             val scanStatus = SensorState.get("text scan")
             val shown = if (ocr.isBlank()) {
                 if (scanStatus == "not started") "" else scanStatus
-            } else "OCR text (tap to expand):\n$ocr"
+            } else "OCR text (tap to expand):\n$ocr\nImage regions (normalized crop coordinates):\n${SensorState.get("ocr regions")}"
             if (ocrResult.text.toString() != shown) ocrResult.text = shown
             val weather = WeatherState.current
             val weatherText = if (weather == null) {

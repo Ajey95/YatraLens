@@ -219,8 +219,10 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
 
     /** Retain reviewed OCR text and its source fingerprint, never the raw capture by default. */
     fun saveOcrText(tripId: String, text: String, imageSha256: String?, jobId: String?,
+                    language: String = "ml-IN",
                     observedAt: Instant = Instant.now()): String {
         require(text.isNotBlank())
+        require(language in setOf("en-IN", "ml-IN", "te-IN", "hi-IN"))
         val db = writableDatabase
         val sourceId = UUID.randomUUID().toString()
         val evidenceId = UUID.randomUUID().toString()
@@ -233,7 +235,7 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
                 put("title", "User-reviewed text crop"); put("excerpt", text)
                 put("source_hash", imageSha256); put("canonical_uri", jobId?.let { "sarvam-job:$it" })
                 put("observed_at", observedAt.toString()); put("captured_at", observedAt.toString())
-                put("language", "ml-IN"); put("permission_scope", "USER_APPROVED_OCR_TEXT")
+                put("language", language); put("permission_scope", "USER_APPROVED_OCR_TEXT")
                 put("retention_policy", "TEXT_AND_HASH_ONLY"); put("created_at", now)
             })
             db.insertOrThrow("evidence", null, ContentValues().apply {
