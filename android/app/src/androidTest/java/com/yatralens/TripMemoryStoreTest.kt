@@ -136,5 +136,51 @@ class TripMemoryStoreTest {
         store.endTrip(tripId)
         store.close()
     }
+
+    @Test fun travellerDestinationHasLocalSourceAndCoordinates() {
+        val store = TripMemoryStore(context)
+        val tripId = UUID.randomUUID().toString()
+        store.startTrip(tripId, "TEST_FIXTURE")
+        val destination = store.saveDestination(tripId, "Houseboat jetty", 9.5, 76.35,
+            "Fixture booking names Houseboat jetty")
+        assertEquals("Houseboat jetty", store.latestDestination(tripId)?.placeName)
+        assertEquals(9.5, store.latestDestination(tripId)!!.latitude, 0.000001)
+        store.readableDatabase.rawQuery("SELECT status FROM trip_event WHERE id=?",
+            arrayOf(destination.eventId)).use {
+            assertEquals(true, it.moveToFirst())
+            assertEquals("USER_ENTERED_UNVERIFIED", it.getString(0))
+        }
+        store.endTrip(tripId)
+        store.close()
+    }
+
+    @Test fun deletingSpeechEvidenceRemovesDerivedClaimAndConflict() {
+        val store = TripMemoryStore(context)
+        val tripId = UUID.randomUUID().toString()
+        store.startTrip(tripId, "TEST_FIXTURE")
+        store.ingestClaim(TripMemoryStore.ClaimDraft(
+            tripId, "boat-delete-fixture", "boarding_time", "15:30", "15:30", "TEST_BOOKING",
+            "TEST_FIXTURE", "Booking", "Fixture booking 15:30", "text", null,
+            observedAt = Instant.now(), permissionScope = "TEST_FIXTURE"))
+        val speech = store.saveTranscript(tripId, "Operator says 16:00", "en-IN", 1500)
+        store.claimFromEvidence(tripId, speech, "boat-delete-fixture", "boarding_time", "16:00", "16:00")
+        assertEquals(1, store.openConflictCount(tripId))
+        assertEquals(true, store.deleteEvidenceCascade(tripId, speech))
+        assertEquals(0, store.openConflictCount(tripId))
+        store.readableDatabase.rawQuery("SELECT COUNT(*) FROM claim WHERE trip_id=?",
+            arrayOf(tripId)).use { it.moveToFirst(); assertEquals(1, it.getInt(0)) }
+        store.readableDatabase.rawQuery("SELECT COUNT(*) FROM source WHERE trip_id=?",
+            arrayOf(tripId)).use { it.moveToFirst(); assertEquals(1, it.getInt(0)) }
+        store.endTrip(tripId)
+        store.close()
+    }
+
+    @Test fun reviewedPhraseCanBeReadAndDeletedOffline() {
+        val store = OfflinePhraseStore(context)
+        val id = store.saveReviewed("Where is the jetty?", "ബോട്ട് ജെട്ടി എവിടെയാണ്?", "en-IN", "ml-IN")
+        assertEquals(id, store.recent().first().id)
+        assertEquals(true, store.delete(id))
+        store.close()
+    }
 }
 

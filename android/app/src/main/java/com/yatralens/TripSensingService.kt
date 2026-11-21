@@ -81,6 +81,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         const val SAVE_DESTINATION = "com.yatralens.SAVE_DESTINATION"
         const val END = "com.yatralens.END"
         private const val CHANNEL = "trip_sensing"
+        private const val ALERT_CHANNEL = "trip_alerts"
         private const val NOTIFICATION_ID = 101
         private val SUPPORTED_TURN_LANGUAGES = setOf("en-IN", "ml-IN", "te-IN", "hi-IN")
     }
@@ -116,6 +117,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var lastGyroEventMs = 0L
     private var frameCount = 0L
     private var audioPacketCount = 0L
+    private val postedAlertKeys = mutableSetOf<String>()
     @Volatile private var micRunning = false
     private var audioRecord: AudioRecord? = null
     private var micThread: Thread? = null
@@ -179,9 +181,10 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         cacheDir.listFiles()?.filter { it.name.startsWith("yatralens-speech-") && it.extension == "wav" }
             ?.forEach { it.delete() }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
-            NotificationChannel(CHANNEL, "Active YatraLens trip", NotificationManager.IMPORTANCE_LOW)
-        )
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).apply {
+            createNotificationChannel(NotificationChannel(CHANNEL, "Active YatraLens trip", NotificationManager.IMPORTANCE_LOW))
+            createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "Trip checks", NotificationManager.IMPORTANCE_DEFAULT))
+        }
         SensorState.set("trip", "stopped")
     }
 
@@ -242,6 +245,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         WeatherState.set(null)
         SceneState.set(null)
         FeatureState.clear()
+        postedAlertKeys.clear()
         locationLastMs = 0L
         cameraAllowedForTrip = mode == "CONTINUOUS"
         val previousTripId = memory.interruptedTripId(mode)
@@ -886,8 +890,6 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val selectedTripId = tripId
         SensorState.set("weather", "Checking forecast overlap for $activity")
         WeatherState.set(null)
-        SceneState.set(null)
-        FeatureState.clear()
         Thread({
             try {
                 val result = CloudGateway.assessWeather(location.lat, location.lon, start, end, activity)
@@ -898,6 +900,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     activity, start, end)))
                 SensorState.set("weather", "${result.decision}: ${result.reason}")
                 store.record("FORECAST_ASSESSED", "decision=${result.decision}")
+                main.post { postContextAlerts() }
             } catch (e: Exception) {
                 SensorState.set("weather", "Forecast unavailable: ${e.message ?: e.javaClass.simpleName}")
                 store.record("FORECAST_FAILED", e.javaClass.simpleName)
@@ -1159,7 +1162,28 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.LOCATION, CaptureState.INTERRUPTED, "stale fix"))
             }
             updateNotification()
+            postContextAlerts()
             main.postDelayed(this, 5000)
+        }
+    }
+
+    private fun postContextAlerts() {
+        val id = tripId ?: return
+        val conflicts = try { memory.openConflicts(id) } catch (_: Exception) { emptyList() }
+        val alerts = ContextDecisionEngine.evaluate(PhysicalContextEngine.situation.value, conflicts)
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        for (alert in alerts) {
+            if (!postedAlertKeys.add(alert.key)) continue
+            val notificationId = 2000 + (alert.key.hashCode() and 0x7fffffff) % 100000
+            val open = PendingIntent.getActivity(this, notificationId,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            manager.notify(notificationId, Notification.Builder(this, ALERT_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(alert.title).setContentText(alert.message)
+                .setStyle(Notification.BigTextStyle().bigText(alert.message))
+                .setContentIntent(open).setAutoCancel(true).build())
+            store.record("CONTEXT_ALERT", "severity=${alert.severity};source=${alert.sourceRef.take(120)}")
         }
     }
 
@@ -1170,6 +1194,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         resumeMicAfterPlayback = false
         finishPlayback("off")
         WeatherState.set(null)
+        SceneState.set(null)
+        FeatureState.clear()
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        for (key in postedAlertKeys) manager.cancel(2000 + (key.hashCode() and 0x7fffffff) % 100000)
+        postedAlertKeys.clear()
         cameraWanted = false
         cameraAllowedForTrip = false
         micWanted = false

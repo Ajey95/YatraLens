@@ -119,6 +119,49 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             cursor.getDouble(3), cursor.getDouble(4), Instant.parse(cursor.getString(5)))
     }
 
+    /** Removes an evidence item and every fact or decision derived from it in one transaction. */
+    fun deleteEvidenceCascade(tripId: String, evidenceId: String): Boolean {
+        val db = writableDatabase
+        var deleted = false
+        db.beginTransaction()
+        try {
+            val sourceId = db.rawQuery("""SELECT s.id FROM evidence e JOIN source s ON s.id=e.source_id
+                WHERE e.id=? AND s.trip_id=?""", arrayOf(evidenceId, tripId)).use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+            if (sourceId != null) {
+                val conflicts = mutableListOf<String>()
+                val derivedClaims = mutableListOf<String>()
+                db.rawQuery("SELECT id FROM claim WHERE evidence_id=?", arrayOf(evidenceId)).use { cursor ->
+                    while (cursor.moveToNext()) derivedClaims.add(cursor.getString(0))
+                }
+                db.rawQuery("""SELECT DISTINCT cc.conflict_id FROM conflict_claim cc
+                    JOIN claim c ON c.id=cc.claim_id WHERE c.evidence_id=?""",
+                    arrayOf(evidenceId)).use { cursor ->
+                    while (cursor.moveToNext()) conflicts.add(cursor.getString(0))
+                }
+                for (conflictId in conflicts) {
+                    db.delete("resolution", "conflict_id=?", arrayOf(conflictId))
+                    db.delete("conflict_claim", "conflict_id=?", arrayOf(conflictId))
+                    db.delete("conflict", "id=?", arrayOf(conflictId))
+                }
+                for (claimId in derivedClaims) db.update("claim", ContentValues().apply {
+                    putNull("supersedes_claim_id")
+                }, "supersedes_claim_id=?", arrayOf(claimId))
+                db.delete("claim", "evidence_id=?", arrayOf(evidenceId))
+                db.delete("evidence", "id=?", arrayOf(evidenceId))
+                val sourceUsed = db.rawQuery("""SELECT 1 FROM evidence WHERE source_id=?
+                    UNION SELECT 1 FROM claim WHERE source_id=?
+                    UNION SELECT 1 FROM trip_event WHERE source_id=? LIMIT 1""",
+                    arrayOf(sourceId, sourceId, sourceId)).use { it.moveToFirst() }
+                if (!sourceUsed) db.delete("source", "id=?", arrayOf(sourceId))
+                deleted = true
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return deleted
+    }
+
     data class ClaimDraft(
         val tripId: String,
         val subjectKey: String,
@@ -344,6 +387,33 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     fun openConflictCount(tripId: String): Int = readableDatabase.rawQuery(
         "SELECT COUNT(*) FROM conflict WHERE trip_id=? AND state='OPEN'", arrayOf(tripId)
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    data class ConflictClaim(val claimId: String, val predicate: String, val value: String,
+                             val sourceTitle: String, val excerpt: String, val observedAt: String)
+    data class ConflictCard(val conflictId: String, val kind: String, val claims: List<ConflictClaim>)
+
+    fun openConflicts(tripId: String): List<ConflictCard> {
+        val db = readableDatabase
+        val result = mutableListOf<ConflictCard>()
+        db.rawQuery("SELECT id, conflict_type FROM conflict WHERE trip_id=? AND state='OPEN' ORDER BY detected_at DESC",
+            arrayOf(tripId)).use { conflicts ->
+            while (conflicts.moveToNext()) {
+                val conflictId = conflicts.getString(0)
+                val claims = mutableListOf<ConflictClaim>()
+                db.rawQuery("""SELECT c.id, c.predicate, c.raw_value, s.title, e.excerpt, c.observed_at
+                    FROM conflict_claim cc JOIN claim c ON c.id=cc.claim_id
+                    JOIN source s ON s.id=c.source_id JOIN evidence e ON e.id=c.evidence_id
+                    WHERE cc.conflict_id=? ORDER BY c.observed_at""", arrayOf(conflictId)).use { rows ->
+                    while (rows.moveToNext()) claims.add(ConflictClaim(
+                        rows.getString(0), rows.getString(1), rows.getString(2),
+                        rows.getString(3) ?: "Untitled source", rows.getString(4) ?: "",
+                        rows.getString(5)))
+                }
+                result.add(ConflictCard(conflictId, conflicts.getString(1), claims))
+            }
+        }
+        return result
+    }
 
     fun latestTripId(): String? = readableDatabase.rawQuery(
         "SELECT id FROM trip WHERE mode<>'TEST_FIXTURE' ORDER BY started_at DESC LIMIT 1", null
