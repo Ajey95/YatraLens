@@ -49,6 +49,11 @@ def finalize_plan(request: str, follow_up_answer: str | None, suggestion: Sugges
                 "action": "OPEN_TASKS", "destination": None,
                 "follow_up_question": "What would you like help with: a sign, a bus, a conversation, weather, or your trip details?",
                 "reason": "The requested task was not clear"}
-    return {"status": "READY", "feature": feature, "action": ACTION_FOR[feature],
+    action = ACTION_FOR[feature]
+    if feature == "F06" and any(word in request_lower for word in ("map", "route")) and not any(
+        word in request_lower for word in ("point", "read", "scan", "board", "sign")
+    ):
+        action = "SHOW_BUS_MAP"
+    return {"status": "READY", "feature": feature, "action": action,
             "destination": destination or None, "follow_up_question": None,
             "reason": "Review the proposed action and any required sharing before proceeding"}

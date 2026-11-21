@@ -34,6 +34,9 @@ import android.widget.Spinner
 import android.widget.TextView
 import org.json.JSONObject
 import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /** A compact traveller screen with diagnostics available on demand. */
 class MainActivity : Activity() {
@@ -1015,7 +1018,7 @@ class MainActivity : Activity() {
                 if (id == null) emptyList() else memory.openConflicts(id))
         }
         for (item in timelineEntries) timelineItems.addView(TextView(this).apply {
-            text = "${item.observedAt} • ${item.title}\n${item.detail}\nSource: ${item.source}"
+            text = "${istTime(item.observedAt)} • ${item.title}\n${item.detail}\nSource: ${item.source}"
             textSize = 15f
             setTextColor(getColor(R.color.yl_ivory))
             setTextIsSelectable(true)
@@ -1030,7 +1033,7 @@ class MainActivity : Activity() {
                 } ?: "")
         for (entry in entries) {
             evidenceItems.addView(TextView(this).apply {
-                text = "${entry.title} • ${entry.observedAt}\n${entry.excerpt}\nSource: ${entry.provider}"
+                text = "${entry.title} • ${istTime(entry.observedAt)}\n${entry.excerpt}\nSource: ${entry.provider}"
                 textSize = 15f
                 setTextIsSelectable(true)
             })
@@ -1052,7 +1055,7 @@ class MainActivity : Activity() {
             })
             card.claims.forEachIndexed { index, claim ->
                 conflictItems.addView(TextView(this).apply {
-                    text = "${claim.value}\n${claim.sourceTitle} • ${claim.observedAt}\n${claim.excerpt}"
+                    text = "${claim.value}\n${claim.sourceTitle} • ${istTime(claim.observedAt)}\n${claim.excerpt}"
                     textSize = 15f
                     setTextIsSelectable(true)
                 })
@@ -1144,7 +1147,7 @@ class MainActivity : Activity() {
                     val recent = TripMemoryStore(this@MainActivity).use { it.recentTimeline(3) }
                     timelinePreview.text = if (recent.isEmpty()) "No saved trip context yet" else
                         "Recent context\n" + recent.joinToString("\n") {
-                            "${it.observedAt.take(16).replace('T', ' ')} • ${it.title}"
+                            "${istTime(it.observedAt)} • ${it.title}"
                         }
                 } catch (_: Exception) { timelinePreview.text = "Trip context unavailable" }
             }
@@ -1349,6 +1352,12 @@ class MainActivity : Activity() {
             handler.postDelayed(this, 1000)
         }
     }
+
+    private fun istTime(value: String): String = try {
+        DateTimeFormatter.ofPattern("d MMM yyyy, h:mm a 'IST'")
+            .withZone(ZoneId.of("Asia/Kolkata"))
+            .format(Instant.parse(value))
+    } catch (_: Exception) { value }
 
     override fun onDestroy() {
         handler.removeCallbacks(refresh)

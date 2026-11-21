@@ -74,6 +74,10 @@ object CloudGateway {
             .put("board_text", boardText).put("destination", destination)
             .put("route_records", routeRecords))
 
+    fun transportMap(destination: String, requestText: String): JSONObject =
+        postJson("/v1/transport/map", JSONObject()
+            .put("destination", destination).put("request_text", requestText))
+
     fun checkDestination(lat: Double, lon: Double, accuracyM: Float, fixAt: Instant,
                          destinationLat: Double, destinationLon: Double,
                          destinationSourceId: String): JSONObject =

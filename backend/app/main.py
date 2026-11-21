@@ -22,6 +22,8 @@ from backend.app.geo_policy import assess_saved_destination
 from backend.app.weather_policy import assess_forecast
 from backend.app.curated import cultural_lookup, discover
 from backend.app.transport_policy import assess_route
+from backend.app.bus_headsigns import approximate_place_pin, place_map_answer, read_board_place
+from backend.app.private_bus_reference import WEB_APP_URL, lookup_private_bus
 from backend.app.agreement_policy import propose_agreements
 from backend.app.scan_policy import scan_cues
 from backend.app.imd_warning import SOURCE_URL as IMD_KERALA_URL, parse_kerala_warning, combine_with_forecast, in_alappuzha_pilot
@@ -131,6 +133,11 @@ class RouteRequest(BaseModel):
     board_text: str = ""
     destination: str = ""
     route_records: list[RouteRecord] = Field(default_factory=list, max_length=20)
+
+
+class TransportMapRequest(BaseModel):
+    destination: str = Field(min_length=1, max_length=120)
+    request_text: str = Field(min_length=1, max_length=1000)
 
 
 class SynthesisRequest(BaseModel):
@@ -298,11 +305,44 @@ async def ocr_interpret(payload: OcrInterpretRequest, _: None = Depends(require_
 @app.post("/v1/transport/check")
 def transport_check(payload: RouteRequest, _: None = Depends(require_auth),
                     __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
-    return {**assess_route(payload.board_text, payload.destination,
-                           [item.model_dump() for item in payload.route_records]),
+    route_result = assess_route(payload.board_text, payload.destination,
+                                [item.model_dump() for item in payload.route_records])
+    if route_result["status"] == "UNKNOWN":
+        try:
+            route_result = lookup_private_bus(payload.board_text, payload.destination) or route_result
+        except (OSError, ValueError):
+            pass
+    if route_result["status"] == "UNKNOWN":
+        route_result = read_board_place(payload.board_text, payload.destination) or route_result
+    origin = ("caller supplied route record" if payload.route_records else
+              "community RTI private-bus schedule; current operation unverified" if
+              route_result["status"] == "PRIVATE_BUS_CANDIDATES" else
+              "indicative major-place corridor; service unverified" if
+              route_result["status"] == "POSSIBLE_CORRIDOR" else
+              "KSRTC depot-name list; no service timetable")
+    return {**route_result,
             "board_text": payload.board_text, "destination": payload.destination,
-            "route_data_origin": "caller supplied; source must be checked by the traveller",
+            "map_pin": approximate_place_pin(payload.destination),
+            "route_data_origin": origin,
+            "private_bus_reference_app": WEB_APP_URL,
             "official_depot_enquiry": "https://keralartc.com/contact/depots-enquiry"}
+
+
+@app.post("/v1/transport/map")
+def transport_map(payload: TransportMapRequest, _: None = Depends(require_auth),
+                  __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    answer = place_map_answer(payload.destination, payload.request_text)
+    try:
+        private = lookup_private_bus(payload.request_text, payload.destination, map_query=True)
+    except (OSError, ValueError):
+        private = None
+    if private is not None:
+        answer.update({"status": private["status"], "reason": private["reason"],
+                       "candidates": private["candidates"],
+                       "source_url": private["source_url"],
+                       "source_kind": private["source_kind"],
+                       "private_bus_reference_app": WEB_APP_URL})
+    return answer
 
 
 @app.post("/v1/culture/lookup")

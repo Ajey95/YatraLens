@@ -519,6 +519,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     val x = bitmap.width / 10
                     val y = bitmap.height / 5
                     val cropped = Bitmap.createBitmap(bitmap, x, y, bitmap.width - 2 * x, bitmap.height - 2 * y)
+                    saveVisualPreview(cropped, "Selected camera text crop")
                     val output = ByteArrayOutputStream()
                     require(cropped.compress(Bitmap.CompressFormat.JPEG, 75, output)) { "Could not encode crop" }
                     val cropBytes = output.toByteArray()
@@ -582,6 +583,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
                         ?: error("Could not decode capture")
                     jpeg.fill(0)
+                    saveVisualPreview(bitmap, "Selected scene capture")
                     Thread({
                         try {
                             if (!activeTrip || tripId != selectedTripId) return@Thread
@@ -609,6 +611,25 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         }) }
     }
 
+    private fun saveVisualPreview(bitmap: Bitmap, label: String) {
+        try {
+            val edge = maxOf(bitmap.width, bitmap.height)
+            val scale = minOf(1.0, 480.0 / edge)
+            val preview = if (scale < 1.0) Bitmap.createScaledBitmap(bitmap,
+                maxOf(1, (bitmap.width * scale).toInt()),
+                maxOf(1, (bitmap.height * scale).toInt()), true) else bitmap
+            val bytes = ByteArrayOutputStream().use { stream ->
+                preview.compress(Bitmap.CompressFormat.JPEG, 65, stream)
+                stream.toByteArray()
+            }
+            VisualEvidenceState.set(bytes, label)
+            bytes.fill(0)
+            if (preview !== bitmap) preview.recycle()
+        } catch (_: Exception) {
+            VisualEvidenceState.clear()
+        }
+    }
+
     private fun saveOcr(approved: Boolean) {
         val result = lastOcr
         val id = tripId
@@ -619,6 +640,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         try {
             val evidenceId = memory.saveOcrText(id, result.text, result.imageSha256,
                 result.jobId, result.language)
+            saveProvisionalDetails(id, evidenceId, result.text)
             SensorState.set("text scan", "Saved reviewed OCR text as evidence $evidenceId")
             store.record("OCR_TEXT_SAVED", "evidence_id=$evidenceId")
             lastOcr = null
@@ -842,12 +864,26 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         try {
             val evidenceId = memory.saveTranscript(id, transcript.text, transcript.language,
                 lastTranscriptDurationMs, owner = turnOwner)
+            saveProvisionalDetails(id, evidenceId, transcript.text)
             ReviewedEvidenceState.set(ConversationState.current?.id, evidenceId)
             SensorState.set("spoken turn", "Saved reviewed transcript as evidence $evidenceId")
             store.record("TRANSCRIPT_SAVED", "evidence_id=$evidenceId")
             lastTranscript = null
         } catch (e: Exception) {
             SensorState.set("spoken turn", "Could not save transcript: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun saveProvisionalDetails(trip: String, evidenceId: String, text: String) {
+        for (candidate in TripDetailExtractor.extract(text)) {
+            try {
+                val saved = memory.claimFromEvidence(trip, evidenceId, "current trip",
+                    candidate.predicate, candidate.raw, candidate.normalized)
+                if (saved.conflictId != null)
+                    SensorState.set("memory conflict", "Two sources disagree on ${candidate.predicate}; ask the traveller")
+            } catch (_: Exception) {
+                // Keep the reviewed source even if extracting a provisional detail fails.
+            }
         }
     }
 
@@ -1144,7 +1180,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private fun checkDestination(intent: Intent) {
         FeatureState.set("destination", null)
         val location = freshAccurateLocation("destination") ?: return
-        val saved = tripId?.let { memory.latestDestination(it) }
+        val saved = memory.latestDestinationAcrossTrips()
         if (saved == null) {
             SensorState.set("destination", "Save sourced destination coordinates first")
             return

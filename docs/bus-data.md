@@ -1,0 +1,7 @@
+# Bus reference used in the hackathon build
+
+The user-selected [Kerala Private Bus Timings app](https://github.com/albinsabu2023/Kerala-Private-Bus-Timing-App) loads district schedules from [amith-vp/Kerala-Private-Bus-Timing](https://github.com/amith-vp/Kerala-Private-Bus-Timing). YatraLens reads the Alappuzha JSON at upstream commit `22752694da65874a791e5e30adc12a6cf18fa7cd` on first relevant bus lookup. It caches the response only in backend process memory; this repository does not redistribute the upstream dataset or copy the React app.
+
+The upstream README describes it as a community conversion of publicly available RTI PDFs and warns that parsing errors and incomplete or stale schedules are possible. No service date or live operations feed is supplied. YatraLens uses vehicle numbers, listed major places, and directional station order to present candidates. Listed clock times appear only when the traveller asks for a time. The app asks the traveller to confirm the actual vehicle, direction, stops, and today's timing with the conductor. If the data cannot be fetched or no candidate matches, the older place-name and indicative-corridor fallback remains available.
+
+Map pins are approximate town centres used for orientation, separate from bus stops and routes. The embedded map uses OpenStreetMap with attribution. No current GPS fix is sent to OpenStreetMap by the bus map path.

@@ -176,7 +176,7 @@ class HomeActivity : Activity() {
     private fun dp(value: Int): Int = (resources.displayMetrics.density * value).toInt()
 
     private fun formatTime(value: String): String = try {
-        DateTimeFormatter.ofPattern("d MMM, h:mm a").withZone(ZoneId.systemDefault())
+        DateTimeFormatter.ofPattern("d MMM, h:mm a 'IST'").withZone(ZoneId.of("Asia/Kolkata"))
             .format(Instant.parse(value))
     } catch (_: Exception) { value }
 }

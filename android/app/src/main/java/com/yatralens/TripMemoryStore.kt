@@ -131,6 +131,17 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             cursor.getDouble(3), cursor.getDouble(4), Instant.parse(cursor.getString(5)))
     }
 
+    /** The last traveller-saved destination remains available when a new bubble starts a new trip. */
+    fun latestDestinationAcrossTrips(): SavedDestination? = readableDatabase.rawQuery(
+        """SELECT e.id, e.source_id, e.place_name, e.latitude, e.longitude, s.observed_at
+            FROM trip_event e JOIN source s ON s.id=e.source_id
+            WHERE e.latitude IS NOT NULL AND e.longitude IS NOT NULL
+            ORDER BY s.observed_at DESC LIMIT 1""", null).use { cursor ->
+        if (!cursor.moveToFirst()) null else SavedDestination(
+            cursor.getString(0), cursor.getString(1), cursor.getString(2),
+            cursor.getDouble(3), cursor.getDouble(4), Instant.parse(cursor.getString(5)))
+    }
+
     /** Removes an evidence item and every fact or decision derived from it in one transaction. */
     fun deleteEvidenceCascade(tripId: String, evidenceId: String): Boolean {
         val db = writableDatabase
@@ -427,6 +438,13 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             }
         }
         return result
+    }
+
+    fun recentOpenConflicts(limit: Int = 5): List<ConflictCard> = readableDatabase.rawQuery(
+        "SELECT DISTINCT trip_id FROM conflict WHERE state='OPEN' ORDER BY detected_at DESC LIMIT ?",
+        arrayOf(limit.coerceIn(1, 20).toString())
+    ).use { rows ->
+        buildList { while (rows.moveToNext()) addAll(openConflicts(rows.getString(0))) }.take(limit)
     }
 
     fun latestTripId(): String? = readableDatabase.rawQuery(

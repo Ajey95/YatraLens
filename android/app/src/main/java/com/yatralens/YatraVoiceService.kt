@@ -36,6 +36,7 @@ class YatraVoiceService : VoiceInteractionService() {
 
     private val main = Handler(Looper.getMainLooper())
     private val wakeEpoch = AtomicInteger(0)
+    private val wakeFailures = AtomicInteger(0)
     @Volatile private var recorder: AudioRecord? = null
     private val wakeWorkers = mutableSetOf<Thread>()
     @Volatile private var pausedForSession = false
@@ -148,9 +149,11 @@ class YatraVoiceService : VoiceInteractionService() {
                 check(audio.state == AudioRecord.STATE_INITIALIZED) { "Wake microphone unavailable" }
                 audio.startRecording()
                 val samples = ByteArray(3200)
+                var successfulReads = 0
                 while (epoch == wakeEpoch.get() && !destroyed) {
                     val count = audio.read(samples, 0, samples.size)
                     if (count <= 0) break
+                    if (++successfulReads == 10) wakeFailures.set(0)
                     if (recognizer.acceptWaveForm(samples, count)) {
                         val heard = JSONObject(recognizer.result).optString("text").trim().lowercase()
                         if (heard == WAKE_PHRASE || heard == "hey assistant") {
@@ -175,7 +178,12 @@ class YatraVoiceService : VoiceInteractionService() {
             try { localRecorder?.stop() } catch (_: Exception) {}
             localRecorder?.release()
             if (recorder === localRecorder) recorder = null
-            if (epoch == wakeEpoch.get()) main.post { notifications.cancel(102) }
+            if (epoch == wakeEpoch.get()) main.post {
+                notifications.cancel(102)
+                val failures = wakeFailures.incrementAndGet().coerceAtMost(5)
+                val delayMs = (1000L shl failures).coerceAtMost(30_000L)
+                main.postDelayed({ if (epoch == wakeEpoch.get() && !destroyed) resumeWake() }, delayMs)
+            }
             synchronized(wakeWorkers) { wakeWorkers.remove(Thread.currentThread()) }
         }
     }

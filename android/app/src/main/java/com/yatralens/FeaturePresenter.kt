@@ -7,7 +7,9 @@ object FeaturePresenter {
     fun describe(kind: String, result: JSONObject): String {
         val status = result.optString("status", "Ready")
         val reason = result.optString("reason")
-        val source = result.optString("source_url", result.optString("official_depot_enquiry"))
+        val source = if (kind == "transport" && status == "POSSIBLE_CORRIDOR")
+            "Observed bus board; indicative road corridor" else
+            result.optString("source_url", result.optString("official_depot_enquiry"))
         val body = when (kind) {
             "typed translation", "scene translation", "transport question", "assistant response" -> buildString {
                 append("Translation ready for review.")
@@ -55,7 +57,12 @@ object FeaturePresenter {
                     append("\nSource: ${place.optString("source_url")}\n")
                 }
             }
-            "transport" -> "${status.replace('_', ' ')}. ${reason.ifBlank { "Ask the conductor before boarding." }}"
+            "transport" -> when (status) {
+                "BOARD_NAME_MATCHES_DESTINATION", "BOARD_PLACE_READ", "POSSIBLE_CORRIDOR",
+                "PRIVATE_BUS_CANDIDATES" -> reason
+                "MULTIPLE_BOARD_PLACES" -> reason
+                else -> "${status.replace('_', ' ')}. ${reason.ifBlank { "Ask the conductor before boarding." }}"
+            }
             else -> "$status. $reason"
         }
         return buildString {

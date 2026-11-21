@@ -23,3 +23,9 @@ def test_bus_context_overrides_generic_ocr_model_label():
     plan = finalize_plan("Read the bus names in Malayalam and tell me where they go", None, suggestion)
     assert plan["feature"] == "F06"
     assert plan["follow_up_question"] == "Where are you planning to go?"
+
+
+def test_bus_map_request_uses_map_without_camera():
+    suggestion = SuggestedIntent(feature="F06", destination="Cherthala", follow_up_question="")
+    plan = finalize_plan("Show the bus route map from Alappuzha to Cherthala", None, suggestion)
+    assert plan["action"] == "SHOW_BUS_MAP"

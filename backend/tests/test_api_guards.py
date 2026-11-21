@@ -51,3 +51,17 @@ def test_assistant_plan_requires_selected_text_consent(monkeypatch):
     assert client.post("/v1/assistant/plan", json=payload).status_code == 401
     assert client.post("/v1/assistant/plan", json=payload,
                        headers={"Authorization": "Bearer test-token"}).status_code == 403
+
+
+def test_bus_board_reads_known_place_without_inventing_route(monkeypatch):
+    monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
+    client = TestClient(app)
+    response = client.post("/v1/transport/check", json={
+        "board_text": "KSRTC ആലപ്പുഴ", "destination": "Alappuzha",
+    }, headers={"Authorization": "Bearer test-token",
+                "X-YatraLens-Cloud-Consent": "approved-current-trip"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "BOARD_NAME_MATCHES_DESTINATION"
+    assert body["board_places"] == ["Alappuzha"]
+    assert "no service timetable" in body["route_data_origin"]
