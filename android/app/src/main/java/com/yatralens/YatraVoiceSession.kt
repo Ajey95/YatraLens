@@ -422,7 +422,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         sensorConsent.visibility = if (needsSensors) View.VISIBLE else View.GONE
         sensorConsent.text = if (planAction in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD"))
             "Allow camera, microphone and location for this trip task" else
-            "Allow microphone and location for this trip task"
+            if (planAction == "OPEN_TALK") "Allow microphone and location for this conversation" else
+                "Allow location for this trip check"
         shareConsent.visibility = if (planAction in setOf("CAPTURE_TEXT", "CAPTURE_BUS_BOARD",
                 "OPEN_TALK", "OPEN_BOOKING", "OPEN_WEATHER", "OPEN_CULTURE", "OPEN_DISCOVERY"))
             View.VISIBLE else View.GONE
@@ -446,7 +447,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             prompt.text = "Approve the selected trip sensors in this bubble first."
             return
         }
-        val required = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val required = mutableListOf<String>()
+        if (needsCamera || planAction == "OPEN_TALK") required.add(Manifest.permission.RECORD_AUDIO)
         if (needsCamera) required.add(Manifest.permission.CAMERA)
         if (planAction in setOf("OPEN_BOOKING", "OPEN_WEATHER", "OPEN_CULTURE", "OPEN_DISCOVERY"))
             required.add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -463,7 +465,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             try {
                 host.startForegroundService(Intent(host, TripSensingService::class.java)
                     .setAction(TripSensingService.START)
-                    .putExtra("mode", if (needsCamera) "CONTINUOUS" else "CONVERSATION"))
+                    .putExtra("mode", when {
+                        needsCamera -> "CONTINUOUS"
+                        planAction == "OPEN_TALK" -> "CONVERSATION"
+                        else -> "LOCATION_ONLY"
+                    }))
                 sessionStartedTrip = true
                 output.text = "Starting selected trip sensors…"
                 setStage("WAIT_TRIP")

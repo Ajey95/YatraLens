@@ -109,6 +109,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var pendingOcrLanguage = "ml-IN"
     private var cameraWanted = false
     private var cameraAllowedForTrip = false
+    private var micAllowedForTrip = false
     private var micWanted = false
     @Volatile private var activeTrip = false
     @Volatile private var tripId: String? = null
@@ -200,14 +201,20 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
-            START -> startTrip(if (intent.getStringExtra("mode") == "CONVERSATION") "CONVERSATION" else "CONTINUOUS")
+            START -> startTrip(when (intent.getStringExtra("mode")) {
+                "CONVERSATION" -> "CONVERSATION"
+                "LOCATION_ONLY" -> "LOCATION_ONLY"
+                else -> "CONTINUOUS"
+            })
             PAUSE_CAMERA -> { cameraWanted = false; stopCamera("PAUSED_BY_USER") }
             MUTE_MIC -> { resumeMicAfterPlayback = false; micWanted = false; stopMic("MUTED_BY_USER") }
-            RESUME_MIC -> if (activeTrip && !speechPreparing && player == null) { micWanted = true; startMic() }
+            RESUME_MIC -> if (activeTrip && micAllowedForTrip && !speechPreparing && player == null) {
+                micWanted = true; startMic()
+            }
             RESUME_CAMERA -> if (activeTrip && cameraAllowedForTrip) { cameraWanted = true; startCamera() }
             RESUME -> if (activeTrip) {
                 if (cameraAllowedForTrip) { cameraWanted = true; startCamera() }
-                if (!speechPreparing && player == null) { micWanted = true; startMic() }
+                if (micAllowedForTrip && !speechPreparing && player == null) { micWanted = true; startMic() }
             }
             CAPTURE_TEXT -> captureText(intent.getBooleanExtra("cloudApproved", false),
                 intent.getStringExtra("language") ?: "ml-IN")
@@ -242,7 +249,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         var types = 0
         if (mode == "CONTINUOUS" && has(Manifest.permission.CAMERA))
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-        if (has(Manifest.permission.RECORD_AUDIO)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        if (mode != "LOCATION_ONLY" && has(Manifest.permission.RECORD_AUDIO))
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         if (has(Manifest.permission.ACCESS_FINE_LOCATION) || has(Manifest.permission.ACCESS_COARSE_LOCATION))
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         if (types == 0) { SensorState.set("trip", "permission required"); stopSelf(); return }
@@ -266,24 +274,26 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         lastSevereThermalMs = 0L
         locationLastMs = 0L
         cameraAllowedForTrip = mode == "CONTINUOUS"
+        micAllowedForTrip = mode != "LOCATION_ONLY"
         val previousTripId = memory.interruptedTripId(mode)
         tripId = previousTripId ?: UUID.randomUUID().toString()
         PhysicalContextEngine.accept(ContextEvent.TripStarted(tripId!!, Instant.now()))
         if (previousTripId == null) memory.startTrip(tripId!!, mode)
         SensorState.set("trip ID", tripId)
         cameraWanted = cameraAllowedForTrip && has(Manifest.permission.CAMERA)
-        micWanted = has(Manifest.permission.RECORD_AUDIO)
+        micWanted = micAllowedForTrip && has(Manifest.permission.RECORD_AUDIO)
         SensorState.set("trip", "${if (previousTripId == null) "active" else "resumed after interruption"} since ${Instant.now()}")
         SensorState.set("camera", if (cameraWanted) "initializing" else "off in conversation mode")
-        SensorState.set("microphone", "initializing")
+        SensorState.set("microphone", if (micAllowedForTrip) "initializing" else "off in location mode")
         PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.CAMERA,
             if (cameraWanted) CaptureState.INITIALIZING else CaptureState.DISABLED))
-        PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.MICROPHONE, CaptureState.INITIALIZING))
+        PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.MICROPHONE,
+            if (micAllowedForTrip) CaptureState.INITIALIZING else CaptureState.DISABLED))
         store.record(if (previousTripId == null) "TRIP_STARTED" else "TRIP_RESUMED")
         startSystemInputs()
         startLocation()
         if (cameraWanted) startCamera()
-        startMic()
+        if (micAllowedForTrip) startMic()
         main.post(healthTick)
     }
 
@@ -1346,6 +1356,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         postedAlertKeys.clear()
         cameraWanted = false
         cameraAllowedForTrip = false
+        micAllowedForTrip = false
         micWanted = false
         main.removeCallbacks(healthTick)
         stopCamera("off")

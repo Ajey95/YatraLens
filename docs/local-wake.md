@@ -2,7 +2,7 @@
 
 The Android app contains an opt-in, offline “Hello assistant” detector. It is active only while YatraLens is selected as the phone's default assistant, microphone and notification permissions are granted, and the local-wake checkbox is enabled. The system assistant gesture remains a fallback. Wake audio is not saved or uploaded. Recognition pauses while the assistant bubble or an active trip uses the microphone, and when the phone reports severe thermal state.
 
-The launcher shows a trip brief and timestamped contextual memory. The assistant bubble asks for the task, uses Sarvam planning only after selected-request consent, then runs its selected camera, conversation, location or local-memory flow in the bubble. It asks separately before sharing an image crop, spoken turn or current GPS fix. The revised bubble has built successfully but still needs a live phone run.
+The launcher shows a trip brief and timestamped contextual memory. The assistant bubble asks for the task, uses Sarvam planning only after selected-request consent, then runs its selected camera, conversation, location or local-memory flow in the bubble. It asks separately before sharing an image crop, spoken turn or current GPS fix. The final bubble opened over the physical phone's launcher, and local offline-help and memory requests worked inside it. The new sensor tasks still need a live in-bubble phone run.
 
 Requests for saved memory, offline help, accessibility or sensor controls can route locally without sending the request to Sarvam. Other requests need a network connection and the selected-request consent check. Offline wake detection does not imply general offline speech recognition for every language.
 
