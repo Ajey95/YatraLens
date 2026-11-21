@@ -28,6 +28,8 @@ class MainActivity : Activity() {
     private lateinit var savedEvidence: TextView
     private lateinit var ocrResult: TextView
     private lateinit var sceneResult: TextView
+    private lateinit var sceneQuestion: EditText
+    private lateinit var sceneAnswer: TextView
     private lateinit var myLanguage: Spinner
     private lateinit var localLanguage: Spinner
     private lateinit var originalTurn: TextView
@@ -137,7 +139,24 @@ class MainActivity : Activity() {
         }
 
         val read = section(layout, "Read a sign", false)
-        addButton(read, "Describe selected scene on this phone") { send(TripSensingService.CAPTURE_SCENE) }
+        addButton(read, "Capture scene on this phone") {
+            sceneAnswer.text = "Analyzing selected photo…"
+            send(TripSensingService.CAPTURE_SCENE)
+        }
+        sceneQuestion = EditText(this).apply {
+            hint = "Ask about this photo, e.g. where do I buy tickets?"
+            setText("What can you see?")
+            textSize = 16f
+        }
+        read.addView(sceneQuestion)
+        addButton(read, "Ask about photo") {
+            val answer = SceneAnswerEngine.answer(SceneState.current, SceneState.capturedAt,
+                sceneQuestion.text.toString())
+            sceneAnswer.text = "${answer.text}\nSource: selected photo, ${answer.model}" +
+                if (answer.cues.isEmpty()) "" else "\nCues: ${answer.cues.joinToString()}"
+        }
+        sceneAnswer = TextView(this).apply { textSize = 17f; setTextIsSelectable(true) }
+        read.addView(sceneAnswer)
         sceneResult = TextView(this).apply { textSize = 16f; setTextIsSelectable(true) }
         read.addView(sceneResult)
         addButton(read, "Capture text with camera") {
@@ -323,7 +342,10 @@ class MainActivity : Activity() {
             }
             val ocr = SensorState.getOcrText()
             val scene = SceneState.current
-            sceneResult.text = scene?.toString(2)?.take(5000) ?: SensorState.get("scene scan").let {
+            sceneResult.text = scene?.let {
+                val objects = it.optJSONArray("objects")?.length() ?: 0
+                "Photo analyzed locally at ${SceneState.capturedAt}; $objects possible objects. Model output is tentative."
+            } ?: SensorState.get("scene scan").let {
                 if (it == "not started") "" else it
             }
             val scanStatus = SensorState.get("text scan")

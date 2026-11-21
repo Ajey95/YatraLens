@@ -21,7 +21,7 @@ object SceneAnswerEngine {
             val item = objects?.optJSONObject(index) ?: return@mapNotNull null
             val name = item.optString("name").trim()
             val score = item.optDouble("score", 0.0)
-            if (name.isBlank() || score < 0.5) null else name to score
+            if (name.isBlank() || score < 0.3) null else name to score
         }.take(5)
         val texts = scene.optJSONArray("text")
         val signCues = (0 until (texts?.length() ?: 0)).mapNotNull { index ->
@@ -41,7 +41,7 @@ object SceneAnswerEngine {
         }
         if (q.contains("see") || q.contains("describe") || q.contains("what")) {
             return if (visible.isNotEmpty()) SceneAnswer("TENTATIVE_DESCRIPTION",
-                "I may see ${visible.joinToString { it.first }}. Check the scene directly before acting.",
+                "The on-device model may see ${visible.joinToString { it.first }}. Check the scene directly before acting.",
                 visible.map { "${it.first} (${(it.second * 100).toInt()}%)" })
             else SceneAnswer("UNKNOWN", "I cannot identify reliable objects in this photo.", emptyList())
         }

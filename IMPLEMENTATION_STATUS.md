@@ -8,11 +8,11 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 - CameraX delivered real frames; AudioRecord delivered real microphone packets; GPS/network location, heading, accelerometer, gyroscope, battery/charging, thermal, connectivity, wall clock, and monotonic clock delivered live values.
 - Camera pause and microphone mute stopped their packet counts; resume restarted the pipelines. Camera and microphone continued during a home/background transition. The screen-lock and 30-minute endurance gates remain open.
 - A user-selected spoken turn reached the local backend and Sarvam Saaras v4. The observed transcript was `Where is my boat jetty?`; the spoken target was `Where is the boat jetty?`. This is one successful end-to-end run, not an accuracy evaluation.
-- Four trip memory tests passed on the connected phone, covering conflict resolution, unsourced claim rejection, separate validity windows, and reviewed speech/OCR evidence provenance.
+- Eight trip memory tests passed on the connected phone, covering conflict resolution, unsourced claim rejection, separate validity windows, reviewed speech/OCR evidence provenance, destination storage, evidence cascade deletion and offline phrase storage.
 - The rebuilt app reported live microphone/GPS/motion/system input. Mute held audio packets at 401, and separate microphone resume advanced them to 419. Its persistent notification read `Camera THROTTLED • Mic ON • Location ON` while Android reported thermal status 3 (severe).
 - After cooldown to status 2, CameraX accepted live frames and sampled scene luminance. A user-approved center crop reached `/v1/ocr/indic`; the backend returned HTTP 200 and the app displayed a completed Document AI result with Malayalam lines, English text, and digits. This verifies the camera-to-provider round trip and some Malayalam recognition, but no line-by-line accuracy comparison with the target has been done. The phone returned to severe status after continued sensing, and ending the trip stopped both camera and mic.
 - Offline trip-memory readback opened on the phone and showed the correct empty state for the current trip. A real saved evidence item has not yet been read back through that screen.
-- The pinned Mirage 4.0.0 model and Android ARM64 runtime loaded on the phone through JNI and returned structured scene and object JSON for a synthetic red image (`MirageNativeTest`, 1 passed). The corrected real camera capture was attempted, but Android thermal status 3 paused CameraX before capture; real scene quality remains unverified.
+- The pinned Mirage 4.0.0 model and Android ARM64 runtime loaded on the phone through JNI and returned structured scene and object JSON for a synthetic red image (`MirageNativeTest`, 1 passed). A subsequent real camera capture returned a tentative indoor scene with objects including a hand, wooden frame, ring and text. These detections were not compared with a ground-truth photo and do not verify a ticket counter or boarding gate.
 
 ## Implemented and built; physical phone retest pending
 
@@ -22,7 +22,8 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 - Review/save of spoken transcript, persistent source-linked trip evidence, offline evidence readback, and validity-window-aware conflict detection.
 - A dim selected capture now turns on the torch only when recent luminance is below 45/255 and a flash unit exists, waits 500 ms, captures, then turns the torch off. This builds; a dim-room phone check is pending.
 - Local traveller-entered destination storage, a schema migration, and offline storage of reviewed phrases are built. These are not yet exercised through the phone screen.
-- The latest APK is installed. Offline readback with saved real evidence remains untested on the phone. The separate rapid-capture queue is built, but that exact queued timing was not independently asserted.
+- The latest APK is installed. Offline readback with saved real evidence remains untested on the phone. The separate rapid-capture queue is built, but that exact queued timing was not independently asserted. The scene question path uses the selected photo, labels object descriptions tentative, and refuses to infer an exact boarding point from objects alone; its new UI path is built but not yet manually exercised on the phone.
+- Deterministic source-gated weather/conflict alert proposals are built. A sourced forecast recommendation can post a deduplicated trip notification, while a `NO_ALERT` or stale forecast cannot. Device tests passed for the policy; notification delivery during a live risk event has not been verified.
 
 ## Backend checks
 
@@ -38,11 +39,11 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 - The traveller reviewed that Telugu text and tapped Speak; Telugu Bulbul audio was audible on the phone. Playback finished and the microphone resumed. Both turn directions therefore work through the device, with the reverse input labeled synthetic.
 - The final conversation-only mode was verified separately on the phone: `Camera OFF • Mic ON • Location ON`, live mic packets and a GPS fix, with no camera frame pipeline opened. End Trip turned the camera and mic off.
 - The on-demand boat-ride weather check ran on the physical phone with separate location-sharing consent, a live GPS fix, and a planned start 60 minutes later. The app displayed `NO_ALERT`, maximum rain probability 0%, maximum gust 7.9 km/h, the Open-Meteo source URL, and retrieval time. This means configured forecast thresholds were not met for that interval; it is not an official no-warning or water-safety clearance. The first attempt rejected a transient coarse location update despite a precise GPS fix shortly before it. A follow-up code change now retains a more accurate recent fix; that change built successfully but has not been rerun on the phone.
-- `python -m pytest -q backend/tests` currently passes 18 tests. Backend does not retain user media or trip history.
+- `python -m pytest -q backend/tests` currently passes 18 tests. The Android device suite passes 12 tests. Backend does not retain user media or trip history.
 
 ## Not complete against the PRD
 
-- On-device Mirage is integrated and passes a synthetic phone inference test, but a real scene question/answer with human-checked guidance and validated Malayalam sign reading is not complete.
+- On-device Mirage is integrated and a real selected photo produced structured cues. The scene question guard is wired and device-tested with fixtures, but a live human-checked ticket/boarding answer and validated Malayalam sign reading are not complete.
 - The two-way conversation demo is working, but it has no fluent-human translation review, local-person identity verification, full conversation history, or long-call mode. The new curated source endpoints still need Android flow verification. No verified route/GTFS dataset, official structured weather warning feed, or production alert delivery is installed.
 - No complete offline ASR/vision package, downloadable maps, preferences/accessibility flow, production authentication, HTTPS deployment, lifecycle recovery proof, or 30-minute power/thermal benchmark.
 - The Android screen now has a compact trip and conversation view with expandable sign, weather, memory and diagnostics sections. It has not had a TalkBack or accessibility audit.
