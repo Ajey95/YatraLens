@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -13,6 +14,9 @@ class SuggestedIntent(BaseModel):
     feature: Feature
     destination: str = Field(max_length=120)
     follow_up_question: str = Field(max_length=240)
+    action: str = Field(default="", max_length=40)
+    requires_camera: bool = False
+    decision_reason: str = Field(default="", max_length=200)
 
 
 ACTION_FOR = {
@@ -23,23 +27,45 @@ ACTION_FOR = {
     "F13": "OPEN_SENSOR_CONTROLS", "UNKNOWN": "OPEN_TASKS",
 }
 
+ALLOWED_ACTIONS = {feature: {action} for feature, action in ACTION_FOR.items()}
+ALLOWED_ACTIONS["F06"] = {"CAPTURE_BUS_BOARD", "SHOW_BUS_MAP"}
+
 
 def finalize_plan(request: str, follow_up_answer: str | None, suggestion: SuggestedIntent) -> dict:
     feature = suggestion.feature
     request_lower = request.casefold()
-    # Board reading is part of transport when the user names a bus. The model
-    # can otherwise mistake the word "read" for generic OCR (F03).
+    answer = (follow_up_answer or "").strip()
+    visual_terms = ("point", "camera", "photo", "picture", "look at", "in front of me",
+                    "what is this", "what's this", "scan", "this sign", "this board",
+                    "this bus", "that bus", "this temple", "that temple")
+    visual_request = any(term in request_lower for term in visual_terms)
+    # Deterministic task cues override a mistaken model label before sensors start.
     if any(marker in request_lower for marker in ("weather", "temperature", "raining now", "മഴ", "వాతావరణ", "मौसम")):
         feature = "F05"
     elif any(marker in request_lower for marker in ("bus", "ബസ്", "బస్స", "बस")):
         feature = "F06"
+    elif any(marker in request_lower for marker in ("talk to", "talk with", "translate", "conversation",
+                                                   "local person", "operator", "conductor")) and not any(
+            marker in request_lower for marker in ("read", "notice", "sign")):
+        feature = "F02"
+    elif any(marker in request_lower for marker in ("shop", "artisan", "handicraft", "craft workshop",
+                                                   "local market", "coir craft")):
+        feature = "F12"
+    elif any(marker in request_lower for marker in ("temple", "church", "mosque", "palace",
+                                                   "museum", "history", "architecture", "customs")):
+        feature = "F07"
     destination = suggestion.destination.strip()
-    answer = (follow_up_answer or "").strip()
     # A route destination is a traveller-stated slot, never an LLM invention.
     if feature == "F06":
         if answer:
             destination = answer[:120]
+        elif match := re.search(r"\bnear\s+([A-Za-z][A-Za-z0-9 -]{2,100}?)(?:\?|$)", request, re.I):
+            destination = match.group(1).strip()
+        elif match := re.search(r"\bto\s+([A-Za-z][A-Za-z0-9 -]{2,100}?)(?:\?|$)", request, re.I):
+            destination = match.group(1).strip()
         elif destination.casefold() not in request_lower:
+            destination = ""
+        if re.match(r"^(my|our|the|a|this|that)\b", destination, re.I):
             destination = ""
         if not destination:
             return {"status": "NEEDS_FOLLOW_UP", "feature": feature,
@@ -51,11 +77,24 @@ def finalize_plan(request: str, follow_up_answer: str | None, suggestion: Sugges
                 "action": "OPEN_TASKS", "destination": None,
                 "follow_up_question": "What would you like help with: a sign, a bus, a conversation, weather, or your trip details?",
                 "reason": "The requested task was not clear"}
-    action = ACTION_FOR[feature]
-    if feature == "F06" and any(word in request_lower for word in ("map", "route")) and not any(
-        word in request_lower for word in ("point", "read", "scan", "board", "sign")
-    ):
+    if feature == "F01" and not visual_request:
+        if answer.casefold() in {"no", "not now", "don't", "do not"}:
+            return {"status": "READY", "feature": "UNKNOWN", "action": "OPEN_TASKS",
+                    "destination": None, "follow_up_question": None,
+                    "reason": "A general question does not authorize a photo"}
+        if answer.casefold() not in {"yes", "use camera", "look"}:
+            return {"status": "NEEDS_FOLLOW_UP", "feature": feature,
+                    "action": "ASK_CAMERA", "destination": None,
+                    "follow_up_question": "Should I use the camera to look at what is in front of you?",
+                    "reason": "A general question does not authorize a photo"}
+    action = suggestion.action if suggestion.action in ALLOWED_ACTIONS[feature] else ACTION_FOR[feature]
+    if feature == "F06" and not visual_request:
         action = "SHOW_BUS_MAP"
+    elif feature == "F06" and visual_request:
+        action = "CAPTURE_BUS_BOARD"
     return {"status": "READY", "feature": feature, "action": action,
             "destination": destination or None, "follow_up_question": None,
+            "needs_camera": action in {"CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD"} or
+                            (feature == "F07" and visual_request),
+            "decision_reason": suggestion.decision_reason[:200],
             "reason": "Review the proposed action and any required sharing before proceeding"}

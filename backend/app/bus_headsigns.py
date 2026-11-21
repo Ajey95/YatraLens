@@ -56,6 +56,32 @@ def approximate_place_pin(destination: str) -> dict | None:
     return None
 
 
+def indicative_nearby_place(request_text: str, place_name: str) -> dict | None:
+    """Match a few known landmarks to indicative named towns, never an actual bus trace."""
+    known_areas = {"international coir museum": "Kalavoor",
+                   "ambalappuzha sree krishna swamy temple": "Ambalappuzha",
+                   "alappuzha beach": "Alappuzha"}
+    near_town = next((town for label, town in known_areas.items()
+                      if label in place_name.casefold()), None)
+    if near_town is None:
+        return None
+    mentioned = set(headsign_places(request_text))
+    possible = [corridor for corridor in CORRIDORS
+                if {corridor[0], corridor[-1]}.issubset(mentioned)]
+    if len(possible) != 1:
+        return None
+    corridor = possible[0]
+    if near_town not in corridor:
+        return {"status": "ROUTE_NEARBY_UNKNOWN", "major_places": list(corridor),
+                "reason": "This place's known area is not a named town in the indicative corridor. "
+                          "I cannot determine whether this bus goes near it; ask the conductor."}
+    return {"status": "POSSIBLY_NEAR_CORRIDOR_PLACE", "major_places": list(corridor),
+            "nearest_named_place": near_town,
+            "reason": f"{place_name} is in the {near_town} area, a named town on an "
+                      "indicative road corridor. This does not confirm this bus stops near it. "
+                      "Ask the conductor whether this exact ride passes there."}
+
+
 def place_map_answer(destination: str, request_text: str) -> dict:
     pin = approximate_place_pin(destination)
     if pin is None:

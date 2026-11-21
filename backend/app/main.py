@@ -7,6 +7,8 @@ uploads, transcripts, images, or exact location in a server database.
 from __future__ import annotations
 
 import os
+import re
+import json
 import asyncio
 import hashlib
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
+import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
@@ -23,7 +26,10 @@ from backend.app.weather_policy import assess_forecast
 from backend.app.weather_current import summarize_current
 from backend.app.curated import cultural_lookup, discover
 from backend.app.transport_policy import assess_route
-from backend.app.bus_headsigns import approximate_place_pin, place_map_answer, read_board_place
+from backend.app.bus_headsigns import (PLACE_CENTRES, approximate_place_pin,
+    headsign_places, indicative_nearby_place, place_map_answer, read_board_place)
+from backend.app.google_places import search_places
+from backend.app.wikipedia_culture import cultural_page
 from backend.app.private_bus_reference import WEB_APP_URL, lookup_private_bus
 from backend.app.agreement_policy import propose_agreements
 from backend.app.scan_policy import scan_cues
@@ -102,6 +108,7 @@ class TranslationRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     source_language_code: str
     target_language_code: str
+    output_script: Literal["roman", "fully-native", "spoken-form-in-native"] | None = None
 
 
 class ClaimInput(BaseModel):
@@ -206,7 +213,14 @@ ASSISTANT_INTENT_SCHEMA = {
         "feature": {"type": "string", "enum": [f"F{i:02d}" for i in range(1, 14)] + ["UNKNOWN"]},
         "destination": {"type": "string"},
         "follow_up_question": {"type": "string"},
-    }, "required": ["feature", "destination", "follow_up_question"],
+        "action": {"type": "string", "enum": ["CAPTURE_SCENE", "OPEN_TALK", "CAPTURE_TEXT",
+            "OPEN_BOOKING", "OPEN_WEATHER", "CAPTURE_BUS_BOARD", "SHOW_BUS_MAP",
+            "OPEN_CULTURE", "OPEN_MEMORY", "OPEN_ACCESSIBILITY", "OPEN_OFFLINE",
+            "OPEN_DISCOVERY", "OPEN_SENSOR_CONTROLS", "OPEN_TASKS"]},
+        "requires_camera": {"type": "boolean"},
+        "decision_reason": {"type": "string"},
+    }, "required": ["feature", "destination", "follow_up_question", "action",
+                    "requires_camera", "decision_reason"],
     "additionalProperties": False,
 }
 
@@ -217,20 +231,24 @@ async def assistant_plan(payload: AssistantPlanRequest, _: None = Depends(requir
     """Sarvam plans one task; the phone alone decides whether to activate a sensor."""
     messages = [
         {"role": "system", "content": (
-            "You route requests for a travel assistant in Kerala. Return only a task classification. "
+            "You route requests for a travel assistant in Kerala. Choose a feature and its action. "
             "F01 scene question, F02 two-way speech, F03 read text, F04 booking/location, "
             "F05 weather, F06 bus route/board, F07 culture, F08 saved promises, "
             "F09 conflicting trip details, F10 accessibility, F11 offline/emergency, "
             "F12 local craft discovery, F13 sensor controls; UNKNOWN otherwise. "
+            "Use the question context: weather needs location, culture and local shops need place search, "
+            "conversation needs speech or selected text. Choose camera only when the traveller asks to see, "
+            "point at, photograph, scan, or read something visible now. A named temple history or a shop search "
+            "does not need a photo. For a bus route question without a pointed board choose SHOW_BUS_MAP. "
             "Extract a destination only when the traveller explicitly says where they want to go. "
             "Never answer route, weather, history, or booking facts. Do not request private data. "
-            "Use an empty string for unknown fields."
+            "Give a brief decision_reason without hidden reasoning. Use an empty string for unknown fields."
         )},
         {"role": "user", "content": f"Language: {payload.language_code}\nRequest: {payload.utterance}\n"
          f"Follow-up answer: {payload.follow_up_answer or ''}"},
     ]
-    body = {"model": "sarvam-105b", "messages": messages, "reasoning_effort": "low",
-            "max_tokens": 350, "response_format": {"type": "json_schema",
+    body = {"model": "sarvam-105b", "messages": messages, "reasoning_effort": "medium",
+            "max_tokens": 800, "response_format": {"type": "json_schema",
             "json_schema": {"name": "yatralens_task", "strict": True,
                             "schema": ASSISTANT_INTENT_SCHEMA}}}
     try:
@@ -335,9 +353,31 @@ def transport_check(payload: RouteRequest, _: None = Depends(require_auth),
 
 
 @app.post("/v1/transport/map")
-def transport_map(payload: TransportMapRequest, _: None = Depends(require_auth),
-                  __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+async def transport_map(payload: TransportMapRequest, _: None = Depends(require_auth),
+                        __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
     answer = place_map_answer(payload.destination, payload.request_text)
+    if approximate_place_pin(payload.destination) is None:
+        answer = {"status": "UNKNOWN", "map_pin": None,
+                  "reason": "The requested place has no confirmed pin yet; ask for a known town or retry live place search."}
+        origin = next((name for name in headsign_places(payload.request_text)
+                       if name in PLACE_CENTRES), "Alappuzha")
+        try:
+            places = await search_places(payload.destination + " Kerala", *PLACE_CENTRES[origin], count=1)
+        except (httpx.HTTPError, ValueError):
+            places = []
+        if places:
+            place = places[0]
+            answer.update({"status": "PIN_AVAILABLE", "map_pin": {
+                "label": place["name"], "latitude": place["latitude"],
+                "longitude": place["longitude"],
+                "precision": "Google Maps place pin; not a confirmed bus stop"},
+                "source_url": place["source_url"], "source_kind": "Google Maps Places"})
+            nearby = indicative_nearby_place(payload.request_text, place["name"])
+            if nearby:
+                answer.update(nearby)
+            else:
+                answer["reason"] = ("Found a place pin for " + place["name"] +
+                    ". I cannot link it to this bus without a confirmed route or stop list. Ask the conductor.")
     try:
         private = lookup_private_bus(payload.request_text, payload.destination, map_query=True)
     except (OSError, ValueError):
@@ -352,15 +392,59 @@ def transport_map(payload: TransportMapRequest, _: None = Depends(require_auth),
 
 
 @app.post("/v1/culture/lookup")
-def culture_lookup(payload: PlaceLookupRequest, _: None = Depends(require_auth),
-                   __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
-    return cultural_lookup(payload.lat, payload.lon, payload.name_hint)
+async def culture_lookup(payload: PlaceLookupRequest, _: None = Depends(require_auth),
+                         __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    curated = cultural_lookup(payload.lat, payload.lon, payload.name_hint)
+    if curated["status"] != "UNKNOWN":
+        result = curated
+    else:
+        try:
+            places = await search_places(payload.name_hint, payload.lat, payload.lon, count=1)
+        except (httpx.HTTPError, ValueError):
+            places = []
+        if not places:
+            return curated
+        place = places[0]
+        result = {"status": "CANDIDATE_REQUIRES_CONFIRMATION", "place_id": place["place_id"],
+                  "name": place["name"], "area": place["area"], "facts": [],
+                  "source_url": place["source_url"], "source_owner": place["source_owner"],
+                  "identity_basis": "user name hint and nearby Google Maps place",
+                  "map_pin": {"label": place["name"], "latitude": place["latitude"],
+                              "longitude": place["longitude"], "precision": "Google Maps place pin"},
+                  "visitor_rules": None, "opening_status": "UNKNOWN",
+                  "reason": "Confirm the site name. Visitor rules and hours are not verified."}
+    try:
+        page = await cultural_page(result["name"])
+    except (httpx.HTTPError, requests.RequestException, ValueError):
+        page = None
+    if page:
+        result = {**result, "web_summary": page["summary"],
+                  "web_source_url": page["source_url"], "image_url": page["image_url"],
+                  "image_source_url": page["image_source_url"]}
+    return result
 
 
 @app.post("/v1/discovery/search")
-def discovery_search(payload: DiscoveryRequest, _: None = Depends(require_auth),
-                     __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
-    return discover(payload.lat, payload.lon, payload.interest)
+async def discovery_search(payload: DiscoveryRequest, _: None = Depends(require_auth),
+                           __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    curated = discover(payload.lat, payload.lon, payload.interest)
+    try:
+        places = await search_places(payload.interest + " shops or places nearby",
+                                     payload.lat, payload.lon, count=5)
+    except (httpx.HTTPError, ValueError):
+        places = []
+    live = [{"place_id": item["place_id"], "name": item["name"], "area": item["area"],
+             "category": item["primary_type"] or "local place",
+             "description": "Nearby Google Maps place candidate; confirm products and access.",
+             "source_url": item["source_url"], "source_owner": item["source_owner"],
+             "opening_status": "UNKNOWN", "contact": None, "seller_verified": False,
+             "map_pin": {"label": item["name"], "latitude": item["latitude"],
+                         "longitude": item["longitude"], "precision": "Google Maps place pin"}}
+            for item in places]
+    results = live + curated["results"]
+    return {"status": "CANDIDATES" if results else "UNKNOWN", "results": results,
+            "reason": "Confirm access and products before visiting" if results else
+                      "No nearby place candidate matched this interest"}
 
 
 @app.post("/v1/geo/check")
@@ -451,8 +535,92 @@ async def weather_assess(payload: WeatherAssessmentRequest, _: None = Depends(re
 async def translate(payload: TranslationRequest, _: None = Depends(require_auth),
                     __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
     key = sarvam_key()
+    # Mayura can treat romanized Telugu questions as Malayalam statements. For
+    # Tengglish turns, ask the reasoning model to preserve the speaker's intent.
+    tengglish = (payload.source_language_code == "te-IN" and
+                 payload.target_language_code == "ml-IN" and
+                 bool(re.search(r"[A-Za-z]", payload.text)) and
+                 not bool(re.search(r"[\u0c00-\u0c7f]", payload.text)))
+    reverse_tengglish = (payload.source_language_code == "ml-IN" and
+                         payload.target_language_code == "te-IN" and
+                         payload.output_script == "roman")
+    if tengglish or reverse_tengglish:
+        direction = ("Translate Malayalam travel speech into romanized Telugu-English "
+                     "(Tengglish). Preserve exact meaning, uncertainty, numbers, times and names. "
+                     "Keep numerals exactly as given. Return only the translation."
+                     if reverse_tengglish else
+                     "Translate romanized Telugu-English travel speech to Malayalam. Preserve "
+                     "intent, question form, names, amounts and times. Infer obvious speech "
+                     "recognition spelling variants only.")
+        body = {"model": "sarvam-105b", "reasoning_effort": "low", "max_tokens": 1200,
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "translation", "strict": True,
+                    "schema": {"type": "object", "properties": {"translation": {"type": "string"}},
+                               "required": ["translation"], "additionalProperties": False}}},
+                "messages": [
+                    {"role": "system", "content": direction},
+                    {"role": "user", "content": payload.text},
+                ]}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(f"{SARVAM}/v1/chat/completions", json=body,
+                                             headers={"api-subscription-key": key})
+                response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+                translated = json.loads(content)["translation"]
+                if not isinstance(translated, str) or not translated.strip():
+                    raise ValueError("Empty Tengglish translation")
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise upstream_error(exc) from exc
+        format_flags: list[str] = []
+        if tengglish:
+            translated = re.sub(r"^(?:മലയാളം|Malayalam)\s*[:：]\s*", "", translated,
+                                flags=re.IGNORECASE).strip()
+            malayalam_chars = len(re.findall(r"[\u0d00-\u0d7f]", translated))
+            if malayalam_chars < max(4, len(translated) // 4):
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        rewritten = await client.post(f"{SARVAM}/v1/chat/completions", json={
+                            **body, "messages": [
+                                {"role": "system", "content": (
+                                    "Write the supplied translation entirely in Malayalam script. "
+                                    "Keep its meaning, question form, names, amounts and times. "
+                                    "Return a JSON translation field only.")},
+                                {"role": "user", "content": translated},
+                            ]}, headers={"api-subscription-key": key})
+                        rewritten.raise_for_status()
+                        translated = json.loads(rewritten.json()["choices"][0]["message"]["content"])[
+                            "translation"].strip()
+                except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+                    pass
+                if len(re.findall(r"[\u0d00-\u0d7f]", translated)) < max(4, len(translated) // 4):
+                    format_flags.append("MALAYALAM_SCRIPT_REVIEW_BEFORE_SPEAKING")
+        if reverse_tengglish and len(re.findall(
+                r"\b(if|there|is|the|will|be|to|at|for|same|people|travel|confirm)\b",
+                translated, re.IGNORECASE)) >= 2:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    roman = await client.post(f"{SARVAM}/translate", json={
+                        "input": translated, "source_language_code": "en-IN",
+                        "target_language_code": "te-IN", "model": "mayura:v1",
+                        "output_script": "roman"}, headers={"api-subscription-key": key})
+                    roman.raise_for_status()
+                    translated = roman.json()["translated_text"].strip()
+                    if not translated:
+                        raise ValueError("Empty Tengglish output")
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                format_flags.append("TENGGLISH_FORMAT_REVIEW_BEFORE_SPEAKING")
+        return {"original": payload.text, "translated_text": translated.strip(),
+                "source_language_code": payload.source_language_code,
+                "target_language_code": payload.target_language_code, "provider": "Sarvam",
+                "model": "sarvam-105b", "output_script": payload.output_script,
+                "translated_at": now_utc(),
+                "review_flags": translation_review_flags(payload.text, translated) + format_flags}
+    model = "mayura:v1" if payload.output_script else "sarvam-translate:v1"
     body = {"input": payload.text, "source_language_code": payload.source_language_code,
-            "target_language_code": payload.target_language_code, "model": "sarvam-translate:v1"}
+            "target_language_code": payload.target_language_code, "model": model}
+    if payload.output_script:
+        body["output_script"] = payload.output_script
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(f"{SARVAM}/translate", json=body, headers={"api-subscription-key": key})
@@ -463,7 +631,7 @@ async def translate(payload: TranslationRequest, _: None = Depends(require_auth)
     return {"original": payload.text, "translated_text": data.get("translated_text", ""),
             "source_language_code": data.get("source_language_code", payload.source_language_code),
             "target_language_code": payload.target_language_code, "provider": "Sarvam",
-            "model": "sarvam-translate:v1", "translated_at": now_utc(),
+            "model": model, "output_script": payload.output_script, "translated_at": now_utc(),
             "review_flags": translation_review_flags(payload.text, data.get("translated_text", ""))}
 
 

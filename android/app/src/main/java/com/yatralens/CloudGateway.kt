@@ -95,6 +95,7 @@ object CloudGateway {
         if (sourceLanguage == targetLanguage) return Translation(text, sourceLanguage, targetLanguage, emptyList())
         val body = JSONObject().put("text", text).put("source_language_code", sourceLanguage)
             .put("target_language_code", targetLanguage)
+        if (targetLanguage == "te-IN") body.put("output_script", "roman")
         val json = postJson("/v1/text/translate", body)
         val translated = json.optString("translated_text")
         require(translated.isNotBlank()) { "Translation returned no text" }

@@ -210,7 +210,8 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
 
     /** Store a reviewed final transcript without asserting an extracted agreement. */
     fun saveTranscript(tripId: String, text: String, language: String?, durationMs: Long,
-                       observedAt: Instant = Instant.now(), owner: String = "TRAVELLER"): String {
+                       observedAt: Instant = Instant.now(), owner: String = "TRAVELLER",
+                       reviewed: Boolean = true): String {
         require(text.isNotBlank() && durationMs > 0)
         require(owner in setOf("TRAVELLER", "LOCAL"))
         val db = writableDatabase
@@ -222,11 +223,13 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             db.insertOrThrow("source", null, ContentValues().apply {
                 put("id", sourceId); put("trip_id", tripId); put("kind", "speech_transcript")
                 put("provider", "Sarvam Saaras v4")
-                put("title", if (owner == "LOCAL") "Local person's turn reviewed by traveller"
+                put("title", if (!reviewed) "Local person's selected trip statement (check wording)"
+                    else if (owner == "LOCAL") "Local person's turn reviewed by traveller"
                     else "Traveller's reviewed spoken turn")
                 put("excerpt", text); put("observed_at", observedAt.toString())
                 put("language", language)
-                put("captured_at", observedAt.toString()); put("permission_scope", "USER_APPROVED_TRANSCRIPT")
+                put("captured_at", observedAt.toString()); put("permission_scope",
+                    if (reviewed) "USER_APPROVED_TRANSCRIPT" else "USER_APPROVED_SELECTED_TURN")
                 put("retention_policy", "USER_MANAGED"); put("source_version", "saaras:v4")
                 put("created_at", now)
             })
@@ -513,6 +516,14 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
         }
         return rows.sortedByDescending { it.observedAt }.take(limit)
     }
+
+    /** Trip facts and traveller-saved evidence, excluding routine task checks and sensor sessions. */
+    fun recentTripContext(limit: Int = 80): List<TimelineEntry> = recentTimeline(200)
+        .filterNot { entry ->
+            entry.title == "Trip started" || entry.title == "Trip ended" ||
+                entry.title == "Scene checked" || entry.title == "Weather check" ||
+                entry.title.endsWith(" check")
+        }.take(limit)
 
     fun recentEvidenceItems(tripId: String): List<EvidenceEntry> = readableDatabase.rawQuery(
         """SELECT e.id, s.observed_at, s.title, s.provider, e.excerpt FROM evidence e

@@ -100,13 +100,13 @@ class HomeActivity : Activity() {
 
     private fun refreshSummary() {
         val active = PhysicalContextEngine.situation.value.tripId != null
-        val entries = try { TripMemoryStore(this).use { it.recentTimeline(60) } }
+        val entries = try { TripMemoryStore(this).use { it.recentTripContext(60) } }
             catch (_: Exception) { emptyList() }
         summary.text = buildString {
             append(if (active) "Trip active" else "No active trip")
             append(" • ${entries.count { it.evidenceId != null }} saved details")
             append("\nCamera ${SensorState.get("camera")} • Mic ${SensorState.get("microphone")}")
-            val facts = entries.filterNot { it.title == "Trip started" || it.title == "Trip ended" }
+            val facts = entries
             append("\n\nRecent context")
             if (facts.isEmpty()) append("\nNothing saved yet. Ask the bubble to read or remember something.")
             else facts.take(3).forEach {

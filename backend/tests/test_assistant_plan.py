@@ -35,3 +35,30 @@ def test_current_weather_request_cannot_be_misrouted_to_scene():
     suggestion = SuggestedIntent(feature="F01", destination="", follow_up_question="")
     plan = finalize_plan("What is the current weather here?", None, suggestion)
     assert plan["action"] == "OPEN_WEATHER"
+
+
+def test_general_question_never_starts_camera_from_model_guess():
+    wrong = SuggestedIntent(feature="F01", destination="", follow_up_question="")
+    plan = finalize_plan("Can you help plan my afternoon?", None, wrong)
+    assert plan["status"] == "NEEDS_FOLLOW_UP"
+    assert plan["action"] == "ASK_CAMERA"
+
+
+def test_named_culture_and_shops_override_scene_guess():
+    wrong = SuggestedIntent(feature="F01", destination="", follow_up_question="")
+    assert finalize_plan("Tell me the history of Ambalappuzha temple", None, wrong)["action"] == "OPEN_CULTURE"
+    assert finalize_plan("Find a local coir craft shop", None, wrong)["action"] == "OPEN_DISCOVERY"
+
+
+def test_bus_route_question_uses_map_without_photo():
+    wrong = SuggestedIntent(feature="F01", destination="Alappuzha Beach", follow_up_question="")
+    plan = finalize_plan("Does the bus go to Alappuzha Beach?", None, wrong)
+    assert plan["action"] == "SHOW_BUS_MAP"
+
+
+def test_nearby_landmark_is_destination_for_route_check():
+    wrong = SuggestedIntent(feature="F06", destination="Cherthala", follow_up_question="")
+    plan = finalize_plan("Does a bus from Alappuzha to Cherthala go near International Coir Museum?",
+                         None, wrong)
+    assert plan["action"] == "SHOW_BUS_MAP"
+    assert plan["destination"] == "International Coir Museum"

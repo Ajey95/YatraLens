@@ -63,6 +63,10 @@ object FeaturePresenter {
                 append("Possible match: ${result.optString("name")}. Confirm its name on a sign.")
                 val facts = result.optJSONArray("facts")
                 if (facts != null) for (i in 0 until facts.length()) append("\n• ${facts.optString(i)}")
+                val webSummary = result.optString("web_summary")
+                if (webSummary.isNotBlank()) append("\n\nMore history (Wikipedia): ${webSummary.take(500)}")
+                if (facts?.length() == 0 && webSummary.isBlank())
+                    append("\nNo source-linked history found for this place yet.")
                 append("\nOpening and visitor rules: unverified.")
             }
             "discovery" -> buildString {
@@ -71,7 +75,7 @@ object FeaturePresenter {
                 else for (i in 0 until places.length()) {
                     val place = places.optJSONObject(i) ?: continue
                     append("${place.optString("name")} • ${place.optString("area")}")
-                    append("\nAccess, seller and map pin are unverified.")
+                    append("\nProducts, opening and seller status need confirmation.")
                     append("\nSource: ${place.optString("source_url")}\n")
                 }
             }
@@ -85,7 +89,11 @@ object FeaturePresenter {
         }
         return buildString {
             append(body)
-            if (kind == "culture" && status != "UNKNOWN") append("\nSource: ${result.optString("source_url")}")
+            if (kind == "culture" && status != "UNKNOWN") {
+                append("\nSource: ${result.optString("source_url")}")
+                if (result.optString("web_source_url").isNotBlank())
+                    append("\nHistory and photo: ${result.optString("web_source_url")}")
+            }
             else if (source.isNotBlank()) append("\nSource: $source")
         }.trim()
     }

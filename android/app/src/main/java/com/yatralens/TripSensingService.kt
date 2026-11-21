@@ -222,7 +222,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             SAVE_OCR -> saveOcr(intent.getBooleanExtra("userApproved", false))
             START_TURN -> startTurn(intent)
             SEND_TURN -> sendTurn(intent.getBooleanExtra("cloudApproved", false))
-            SAVE_TRANSCRIPT -> saveTranscript(intent.getBooleanExtra("userApproved", false))
+            SAVE_TRANSCRIPT -> saveTranscript(intent.getBooleanExtra("userApproved", false),
+                intent.getBooleanExtra("reviewed", true))
             SPEAK_TRANSLATION -> speakTranslation(intent)
             SPEAK_REVIEWED_TEXT -> speakReviewedText(intent)
             TRANSLATE_TYPED -> translateTyped(intent)
@@ -816,7 +817,9 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 }
                 SensorState.set("spoken turn", "${result.language ?: "unknown language"}: ${result.text}")
                 store.record("TURN_TRANSCRIBED", "model=${result.model};language=${result.language};owner=$owner")
-                val detected = result.language?.takeIf { it in SUPPORTED_TURN_LANGUAGES } ?: source
+                val detected = if ((owner == "TRAVELLER" && source == "te-IN") ||
+                    (owner == "LOCAL" && source == "ml-IN")) source else
+                    result.language?.takeIf { it in SUPPORTED_TURN_LANGUAGES } ?: source
                 if (forAssistant) {
                     if (!activeTrip || turnId != selectedTurnId) return@Thread
                     FeatureState.set("assistant transcript", JSONObject()
@@ -849,12 +852,12 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 }
             } catch (e: Exception) {
                 SensorState.set("spoken turn", "transcription unavailable: ${e.message ?: e.javaClass.simpleName}")
-                store.record("TURN_TRANSCRIPTION_FAILED", e.javaClass.simpleName)
+                store.record("TURN_TRANSCRIPTION_FAILED", (e.message ?: e.javaClass.simpleName).take(160))
             } finally { pcm.fill(0) }
         }, "YatraLensCloudTurn").start()
     }
 
-    private fun saveTranscript(approved: Boolean) {
+    private fun saveTranscript(approved: Boolean, reviewed: Boolean = true) {
         val transcript = lastTranscript
         val id = tripId
         if (!approved || assistantTurn || transcript == null || id == null) {
@@ -863,10 +866,10 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         }
         try {
             val evidenceId = memory.saveTranscript(id, transcript.text, transcript.language,
-                lastTranscriptDurationMs, owner = turnOwner)
-            saveProvisionalDetails(id, evidenceId, transcript.text)
+                lastTranscriptDurationMs, owner = turnOwner, reviewed = reviewed)
+            if (reviewed) saveProvisionalDetails(id, evidenceId, transcript.text)
             ReviewedEvidenceState.set(ConversationState.current?.id, evidenceId)
-            SensorState.set("spoken turn", "Saved reviewed transcript as evidence $evidenceId")
+            SensorState.set("spoken turn", "Saved selected trip statement as evidence $evidenceId")
             store.record("TRANSCRIPT_SAVED", "evidence_id=$evidenceId")
             lastTranscript = null
         } catch (e: Exception) {

@@ -42,9 +42,9 @@ MATERIAL_PREDICATES = frozenset(
 def translation_review_flags(original: str, translated: str) -> list[str]:
     """Flag changed numeric tokens; this cannot establish semantic equivalence."""
     def tokens(value: str) -> Counter[str]:
-        matches = re.findall(r"\d+(?::\d{2})?", value)
+        matches = re.findall(r"\d{1,3}(?:,\d{3})+(?::\d{2})?|\d+(?::\d{2})?", value)
         return Counter("".join(str(unicodedata.decimal(char)) if char.isdecimal() else char
-                               for char in match) for match in matches)
+                               for char in match if char != ",") for match in matches)
 
     return (["NUMBERS_OR_TIME_CHANGED_REVIEW_BEFORE_SPEAKING"]
             if tokens(original) != tokens(translated) else [])

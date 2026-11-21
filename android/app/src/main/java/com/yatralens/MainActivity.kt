@@ -1011,7 +1011,7 @@ class MainActivity : Activity() {
         timelineItems.removeAllViews()
         evidenceItems.removeAllViews()
         conflictItems.removeAllViews()
-        val timelineEntries = TripMemoryStore(this).use { it.recentTimeline(50) }
+        val timelineEntries = TripMemoryStore(this).use { it.recentTripContext(50) }
         val (tripId, entries, conflicts) = TripMemoryStore(this).use { memory ->
             val id = memory.latestTripId()
             Triple(id, if (id == null) emptyList() else memory.recentEvidenceItems(id),
@@ -1144,7 +1144,7 @@ class MainActivity : Activity() {
             if (android.os.SystemClock.elapsedRealtime() - lastTimelineRefreshMs > 10_000) {
                 lastTimelineRefreshMs = android.os.SystemClock.elapsedRealtime()
                 try {
-                    val recent = TripMemoryStore(this@MainActivity).use { it.recentTimeline(3) }
+                    val recent = TripMemoryStore(this@MainActivity).use { it.recentTripContext(3) }
                     timelinePreview.text = if (recent.isEmpty()) "No saved trip context yet" else
                         "Recent context\n" + recent.joinToString("\n") {
                             "${istTime(it.observedAt)} • ${it.title}"

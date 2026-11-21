@@ -34,4 +34,5 @@ def test_translation_flags_changed_time_even_when_money_is_preserved():
         "NUMBERS_OR_TIME_CHANGED_REVIEW_BEFORE_SPEAKING"
     ]
     assert translation_review_flags("₹1200, 16:00", "₹१२००, १६:००") == []
+    assert translation_review_flags("₹1,200 return 16:00", "₹1200 മടക്കം 16:00") == []
 

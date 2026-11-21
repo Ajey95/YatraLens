@@ -11,4 +11,5 @@ android/.idea/
 *.apk
 *.jks
 *.keystore
+backend/uvicorn.*.log
 
