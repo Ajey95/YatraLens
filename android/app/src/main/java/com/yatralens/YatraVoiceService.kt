@@ -49,7 +49,7 @@ class YatraVoiceService : VoiceInteractionService() {
     private var thermalSuspended = false
     private var thermalRegistered = false
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
-        if (status >= PowerManager.THERMAL_STATUS_SEVERE) {
+        if (status >= PowerManager.THERMAL_STATUS_CRITICAL) {
             thermalSuspended = true
             pauseWake()
         } else if (thermalSuspended) {
@@ -113,7 +113,7 @@ class YatraVoiceService : VoiceInteractionService() {
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
             (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) ||
-            power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) return
+            power.currentThermalStatus >= PowerManager.THERMAL_STATUS_CRITICAL) return
         try { recorder?.stop() } catch (_: Exception) {}
         val epoch = wakeEpoch.incrementAndGet()
         notifications.notify(102, Notification.Builder(this, "local_wake")
