@@ -22,5 +22,9 @@ class ContextDecisionEngineTest {
             forecast.copy(retrievedAt = now.minusSeconds(3 * 3600))), emptyList(), now).isEmpty())
         assertTrue(ContextDecisionEngine.evaluate(situation.copy(forecast =
             forecast.copy(decision = "NO_ALERT")), emptyList(), now).isEmpty())
+        assertTrue(ContextDecisionEngine.evaluate(situation.copy(forecast =
+            forecast.copy(retrievedAt = now.plusSeconds(30))), emptyList(), now).isEmpty())
+        assertTrue(ContextDecisionEngine.evaluate(situation.copy(forecast =
+            forecast.copy(eventStart = now.plusSeconds(24 * 3600 + 1))), emptyList(), now).isEmpty())
     }
 }

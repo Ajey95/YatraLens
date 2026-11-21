@@ -103,6 +103,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     @Volatile private var captureBusy = false
     @Volatile private var autoTorchOwned = false
     private var cameraStarting = false
+    private var lastSevereThermalMs = 0L
     private var pendingOcrCapture = false
     private var pendingOcrLanguage = "ml-IN"
     private var cameraWanted = false
@@ -167,8 +168,10 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         PhysicalContextEngine.accept(ContextEvent.Thermal(status, Instant.now()))
         store.record("THERMAL_STATUS", status.toString())
         if (status >= PowerManager.THERMAL_STATUS_SEVERE) {
+            lastSevereThermalMs = SystemClock.elapsedRealtime()
             if (cameraProvider != null) stopCamera("THROTTLED_THERMAL")
-        } else if (activeTrip && cameraWanted && cameraProvider == null) {
+        } else if (activeTrip && cameraWanted && cameraProvider == null &&
+            ThermalCameraPolicy.canOpen(status, lastSevereThermalMs, SystemClock.elapsedRealtime())) {
             startCamera()
         }
     }
@@ -255,6 +258,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         SensorState.setOcrText("")
         SensorState.set("ocr regions", "")
         postedAlertKeys.clear()
+        lastSevereThermalMs = 0L
         locationLastMs = 0L
         cameraAllowedForTrip = mode == "CONTINUOUS"
         val previousTripId = memory.interruptedTripId(mode)
@@ -321,7 +325,10 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.CAMERA, CaptureState.DISABLED))
             return
         }
-        if (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) {
+        if (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE)
+            lastSevereThermalMs = SystemClock.elapsedRealtime()
+        if (!ThermalCameraPolicy.canOpen(power.currentThermalStatus,
+                lastSevereThermalMs, SystemClock.elapsedRealtime())) {
             SensorState.set("camera", "THROTTLED_THERMAL")
             PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.CAMERA, CaptureState.THROTTLED, "thermal"))
             store.record("CAMERA_THROTTLED", "thermal=${power.currentThermalStatus}")
@@ -333,7 +340,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             cameraStarting = false
-            if (!activeTrip || !cameraWanted || power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) {
+            if (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE)
+                lastSevereThermalMs = SystemClock.elapsedRealtime()
+            if (!activeTrip || !cameraWanted ||
+                !ThermalCameraPolicy.canOpen(power.currentThermalStatus,
+                    lastSevereThermalMs, SystemClock.elapsedRealtime())) {
                 SensorState.set("camera", if (cameraWanted) "THROTTLED_THERMAL" else "PAUSED_BY_USER")
                 return@addListener
             }
@@ -419,8 +430,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         captureBusy = true
         val scene = PhysicalContextEngine.situation.value.scene
         val camera = boundCamera
-        val dim = PhysicalContextEngine.fresh(SensorKind.CAMERA, 15_000) &&
-            scene?.averageLuma?.let { it < 45 } == true
+        val dim = CaptureLightPolicy.isDim(scene?.averageLuma,
+            PhysicalContextEngine.fresh(SensorKind.CAMERA, 15_000))
         if (!dim || camera?.cameraInfo?.hasFlashUnit() != true ||
             camera.cameraInfo.torchState.value == TorchState.ON) {
             SensorState.set("capture light", if (dim) "Torch unavailable or already on" else "Ambient light sufficient")
@@ -827,8 +838,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val input = intent.getStringExtra("text")?.trim().orEmpty()
         val source = intent.getStringExtra("sourceLanguage")?.trim().orEmpty()
         val target = intent.getStringExtra("targetLanguage")?.trim().orEmpty()
-        val kind = if (intent.getStringExtra("kind") == "scene translation") "scene translation"
-            else "typed translation"
+        val kind = when (intent.getStringExtra("kind")) {
+            "scene translation" -> "scene translation"
+            "transport question" -> "transport question"
+            else -> "typed translation"
+        }
         if (input.isBlank() || input.length > 2000 || source !in SUPPORTED_TURN_LANGUAGES ||
             target !in SUPPORTED_TURN_LANGUAGES) {
             SensorState.set(kind, "Enter text and choose supported languages")
@@ -1212,10 +1226,12 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             val thermalNow = power.currentThermalStatus
             SensorState.set("thermal status", thermalNow)
             PhysicalContextEngine.accept(ContextEvent.Thermal(thermalNow, Instant.now()))
+            if (thermalNow >= PowerManager.THERMAL_STATUS_SEVERE)
+                lastSevereThermalMs = now
             if (cameraWanted && cameraProvider == null && SensorState.get("camera") == "THROTTLED_THERMAL" &&
-                thermalNow < PowerManager.THERMAL_STATUS_SEVERE) startCamera()
+                ThermalCameraPolicy.canOpen(thermalNow, lastSevereThermalMs, now)) startCamera()
             if (cameraWanted && cameraProvider == null && SensorState.get("camera").startsWith("interrupted") &&
-                thermalNow < PowerManager.THERMAL_STATUS_SEVERE) startCamera()
+                ThermalCameraPolicy.canOpen(thermalNow, lastSevereThermalMs, now)) startCamera()
             if (cameraProvider != null && thermalNow >= PowerManager.THERMAL_STATUS_SEVERE)
                 stopCamera("THROTTLED_THERMAL")
             SensorState.set("clock UTC", Instant.now())

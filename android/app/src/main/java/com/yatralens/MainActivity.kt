@@ -65,6 +65,8 @@ class MainActivity : Activity() {
     private lateinit var typedInput: EditText
     private lateinit var typedTranslation: EditText
     private var displayedTypedTranslation = ""
+    private lateinit var conductorTranslation: EditText
+    private var displayedConductorTranslation = ""
     private lateinit var weatherConsent: CheckBox
     private lateinit var weatherActivity: EditText
     private lateinit var weatherStart: EditText
@@ -72,6 +74,8 @@ class MainActivity : Activity() {
     private lateinit var weatherResult: TextView
     private var displayedTurnId = 0L
     private var displayedTranslation = ""
+    private val tripScopedConsents = mutableListOf<CheckBox>()
+    private var wasTripActive = false
     private val languageNames = listOf("Telugu", "Malayalam", "English", "Hindi")
     private val languageCodes = listOf("te-IN", "ml-IN", "en-IN", "hi-IN")
     private lateinit var optIn: CheckBox
@@ -128,11 +132,13 @@ class MainActivity : Activity() {
             textSize = 16f
         }
         layout.addView(optIn)
+        tripScopedConsents.add(optIn)
         cloudConsent = CheckBox(this).apply {
             text = "Allow selected speech and text to use Sarvam"
             textSize = 16f
         }
         layout.addView(cloudConsent)
+        tripScopedConsents.add(cloudConsent)
         layout.addView(TextView(this).apply { text = "My language"; textSize = 16f })
         myLanguage = languageSpinner(layout, 0)
         layout.addView(TextView(this).apply { text = "Local person's language"; textSize = 16f })
@@ -143,7 +149,10 @@ class MainActivity : Activity() {
         startTalkButton = addButton(layout, "Start trip for conversation only") {
             requestStart("CONVERSATION")
         }
-        endTripButton = addButton(layout, "End trip and stop sensors") { send(TripSensingService.END) }
+        endTripButton = addButton(layout, "End trip and stop sensors") {
+            send(TripSensingService.END)
+            clearTripConsents()
+        }
 
         val talk = section(layout, "Talk & Listen", false)
         addButton(talk, "Speak to local person") {
@@ -361,6 +370,7 @@ class MainActivity : Activity() {
             textSize = 16f
         }
         weatherSection.addView(weatherConsent)
+        tripScopedConsents.add(weatherConsent)
         addButton(weatherSection, "Check forecast") {
             val start = weatherStart.text.toString().toIntOrNull()
             val duration = weatherDuration.text.toString().toIntOrNull()
@@ -401,6 +411,7 @@ class MainActivity : Activity() {
             textSize = 16f
         }
         booking.addView(locationConsent)
+        tripScopedConsents.add(locationConsent)
         val destinationName = input(booking, "Booked place name")
         val destinationLat = input(booking, "Booking latitude (decimal)").apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
@@ -455,12 +466,41 @@ class MainActivity : Activity() {
             else notice.text = "Allow selected text to use the service first."
         }
         featureOutput(transit, "transport")
+        val conductorQuestion = input(transit, "Write a question for the conductor in your language")
+        addButton(transit, "Translate question for conductor") {
+            if (!cloudConsent.isChecked || conductorQuestion.text.isBlank())
+                notice.text = "Write your question and allow selected text to use Sarvam."
+            else {
+                conductorTranslation.setText("")
+                displayedConductorTranslation = ""
+                FeatureState.set("transport question", null)
+                startService(Intent(this, TripSensingService::class.java)
+                    .setAction(TripSensingService.TRANSLATE_TYPED).putExtra("cloudApproved", true)
+                    .putExtra("kind", "transport question")
+                    .putExtra("text", conductorQuestion.text.toString())
+                    .putExtra("sourceLanguage", selectedCode(myLanguage))
+                    .putExtra("targetLanguage", selectedCode(localLanguage)))
+            }
+        }
+        featureOutput(transit, "transport question")
+        conductorTranslation = input(transit, "Review the local-language question")
+        addButton(transit, "Speak reviewed question to conductor") {
+            val result = FeatureState.get("transport question")
+            if (!cloudConsent.isChecked || result == null || conductorTranslation.text.isBlank())
+                notice.text = "Translate and review your conductor question first."
+            else startService(Intent(this, TripSensingService::class.java)
+                .setAction(TripSensingService.SPEAK_REVIEWED_TEXT)
+                .putExtra("cloudApproved", true)
+                .putExtra("approvedText", conductorTranslation.text.toString())
+                .putExtra("language", result.optString("target_language")))
+        }
         val explore = section(layout, "Culture & local craft", false)
         val exploreConsent = CheckBox(this).apply {
             text = "Send my current GPS fix for this lookup"
             textSize = 16f
         }
         explore.addView(exploreConsent)
+        tripScopedConsents.add(exploreConsent)
         val landmark = input(explore, "Temple or landmark name from a sign")
         addButton(explore, "Use last scanned sign as name hint") {
             val scanned = SensorState.getOcrText()
@@ -585,6 +625,10 @@ class MainActivity : Activity() {
         it.hint = hint
         it.textSize = 16f
         layout.addView(it)
+    }
+
+    private fun clearTripConsents() {
+        tripScopedConsents.forEach { it.isChecked = false }
     }
 
     private fun featureOutput(layout: LinearLayout, kind: String) {
@@ -804,6 +848,14 @@ class MainActivity : Activity() {
                     sceneTranslation.setText(latest)
                 }
             }
+            val conductorTranslated = FeatureState.get("transport question")
+            if (conductorTranslated != null) {
+                val latest = conductorTranslated.optString("translated_text")
+                if (latest.isNotBlank() && latest != displayedConductorTranslation) {
+                    displayedConductorTranslation = latest
+                    conductorTranslation.setText(latest)
+                }
+            }
             if (interpretation != null) {
                 val latestTranslation = interpretation.optString("translated_text")
                 if (latestTranslation.isNotBlank() && latestTranslation != displayedOcrTranslation) {
@@ -846,6 +898,8 @@ class MainActivity : Activity() {
                 "Offline: saved trip memory, phrases and emergency references are available. Live checks need a connection."
             if (offlineNotice.text.toString() != offlineText) offlineNotice.text = offlineText
             val active = PhysicalContextEngine.situation.value.tripId != null
+            if (wasTripActive && !active) clearTripConsents()
+            wasTripActive = active
             startCameraButton.visibility = if (active) View.GONE else View.VISIBLE
             startTalkButton.visibility = if (active) View.GONE else View.VISIBLE
             endTripButton.visibility = if (active) View.VISIBLE else View.GONE

@@ -21,9 +21,11 @@ object ContextDecisionEngine {
         val forecast = situation.forecast
         if (forecast != null && forecast.decision == "ACTION_RECOMMENDED" &&
             forecast.sourceUrl.startsWith("https://") &&
-            Duration.between(forecast.retrievedAt, now).toMinutes() in 0..120 &&
+            !forecast.retrievedAt.isAfter(now) &&
+            !forecast.retrievedAt.isBefore(now.minus(Duration.ofHours(2))) &&
             forecast.eventEnd.isAfter(now) &&
-            Duration.between(now, forecast.eventStart).toHours() in -1..24) {
+            !forecast.eventStart.isBefore(now.minus(Duration.ofHours(1))) &&
+            !forecast.eventStart.isAfter(now.plus(Duration.ofHours(24)))) {
             alerts.add(ContextAlert("forecast:${forecast.activity}:${forecast.eventStart}",
                 "Check your ${forecast.activity} plan",
                 "The forecast overlaps this activity. Confirm operating status with the operator.",

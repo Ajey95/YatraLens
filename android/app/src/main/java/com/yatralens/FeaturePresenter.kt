@@ -9,7 +9,7 @@ object FeaturePresenter {
         val reason = result.optString("reason")
         val source = result.optString("source_url", result.optString("official_depot_enquiry"))
         val body = when (kind) {
-            "typed translation", "scene translation" -> buildString {
+            "typed translation", "scene translation", "transport question" -> buildString {
                 append("Translation ready for review.")
                 val flags = result.optJSONArray("review_flags")
                 if (flags != null && flags.length() > 0)
