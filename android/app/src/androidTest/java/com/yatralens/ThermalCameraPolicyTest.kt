@@ -9,16 +9,15 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ThermalCameraPolicyTest {
-    @Test fun severeHeatRequiresLightStatusAndCooldownBeforeRestart() {
-        val severeAt = 100_000L
-        assertFalse(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_SEVERE, 0, severeAt))
+    @Test fun severeHeatKeepsCameraButCriticalRequiresCooldown() {
+        val criticalAt = 100_000L
+        assertTrue(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_SEVERE, 0, criticalAt))
+        assertFalse(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_CRITICAL, 0, criticalAt))
+        assertFalse(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_SEVERE,
+            criticalAt, criticalAt + 120_000))
         assertFalse(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_MODERATE,
-            severeAt, severeAt + 120_000))
-        assertFalse(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_LIGHT,
-            severeAt, severeAt + 59_999))
-        assertTrue(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_LIGHT,
-            severeAt, severeAt + 60_000))
+            criticalAt, criticalAt + 59_999))
         assertTrue(ThermalCameraPolicy.canOpen(PowerManager.THERMAL_STATUS_MODERATE,
-            0, severeAt))
+            criticalAt, criticalAt + 60_000))
     }
 }

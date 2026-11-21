@@ -747,13 +747,10 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         answer.setText(heard)
                         awaitingPlannerAnswer = false
                     } else {
-                        if (sessionStartedTrip) {
-                            send(TripSensingService.END)
-                            sessionStartedTrip = false
-                        }
                         planAction = ""
                         request.setText(heard)
                         answer.setText("")
+                        rememberReportedTripContext(heard)
                     }
                     if (cloud.isChecked) plan()
                     else {
@@ -922,6 +919,9 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         RegexOption.IGNORE_CASE).containsMatchIn(request.text.toString())
 
     private fun prepareTask() {
+        val cameraTask = planAction in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD") ||
+            (planAction == "OPEN_CULTURE" && cultureNeedsCamera())
+        if (sessionStartedTrip && !cameraTask) send(TripSensingService.PAUSE_CAMERA)
         if (typedConversationMode && planAction == "OPEN_TALK") {
             listenEpoch++
             recognizer?.destroy()
@@ -1055,6 +1055,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             if (needsCamera) send(TripSensingService.START, "mode" to "CAMERA_ONLY")
             else if (planAction == "OPEN_TALK")
                 send(TripSensingService.START, "mode" to "CONVERSATION")
+            else send(TripSensingService.START, "mode" to "LOCATION_ONLY")
             setStage("WAIT_TRIP")
         }
         stopTrip.visibility = View.VISIBLE
