@@ -2,6 +2,24 @@
 
 This file reports implemented behavior, not PRD acceptance. The product brief is `YATRALENS_MASTER_PRD.md`. The build is a local development prototype.
 
+## Feature acceptance snapshot
+
+| Feature | Current implementation | Remaining acceptance gate |
+| --- | --- | --- |
+| F01 Point & Ask | Real camera capture and on-device Mirage scene cues; cautious question answers, translation and reviewed speech controls | Human-checked live scene answer, sign/boarding evidence, voice path on phone |
+| F02 Talk & Listen | Both phone speech directions translated and spoken after review; typed fallback added | Fluent-human quality check, typed flow and longer conversation test |
+| F03 Read Anything | Real Malayalam camera OCR; selectable OCR language, region blocks, translation and speech controls | Multilingual notice accuracy, translated action review and audio path on phone |
+| F04 Geospatial Intelligence | Sourced manual booking point, accuracy-aware distance/bearing check and map intent | Real booking-point comparison and map handoff on phone |
+| F05 Weather-Aware Guide | Live Open-Meteo trip forecast and source-gated alert policy | Live risk notification; official IMD feed access |
+| F06 Smart Transport | Source-aware positive/negative/unknown policy; OCR-to-board text control | Verified route data and a live bus-board check |
+| F07 Cultural Companion | Official-source Ambalappuzha pilot entry with identity caveat | Landmark lookup on phone and broader curated corpus |
+| F08 Trip Memory | Reviewed transcript/OCR evidence, tentative agreement proposals, local claim save and cascade deletion | Live proposal review/save and exact quote readback |
+| F09 Evidence & Conflicts | Temporal conflict detection, source cards, user resolution audit and alert policy | Live disagreement flow and reminder-blocking UI check |
+| F10 Accessibility | Large actions, screen-reader labels/live notices and system-bar handling | TalkBack, large-text and contrast audit |
+| F11 Offline Assistance | Local memory, reviewed phrasebook, booking point, offline banner and sourced emergency references | Airplane-mode phone run, downloadable maps and optional local ASR |
+| F12 Local Discovery | Official-source Coir Museum pilot candidate with unknown opening/map status | Phone lookup and authorized artisan registry |
+| F13 Physical Context Engine | Real sensors, foreground trip, thermal pause/recovery and sourced alert proposals | 30-minute endurance, screen-lock recovery and live multi-input alert |
+
 ## Verified on the physical Android phone
 
 - User-started foreground trip with camera, microphone, and location permissions and a persistent notification.
