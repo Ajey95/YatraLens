@@ -80,6 +80,23 @@ These are the thirteen PRD feature groups. **Prototype** means a connected imple
 | **F12 · Local Discovery** | Find a sourced coir craft experience or nearby operator. | Prototype: small Alappuzha pilot; merchant coverage and live availability are limited. |
 | **F13 · Physical Context Engine** | Keep an authorized trip available as location, weather and agreements change. | Prototype: foreground sensing, sensor state and alert policy; endurance and recovery checks remain. |
 
+## How Sarvam powers the features
+
+Sarvam supplies **Indian-language and document AI through the consent-gated backend**. It is a family of specialized models, not one model that sees the whole trip. YatraLens supplies the camera and GPS observations, the local trip memory, source checks, conflict rules and user controls. The backend sends only the selected input needed for an approved cloud action; the Sarvam API key stays off the phone.
+
+| Sarvam capability | What the model does | Where YatraLens uses it |
+| --- | --- | --- |
+| [**Saaras v4**](https://docs.sarvam.ai/api/api-guides-tutorials/models/saaras) · `saaras:v4` | Converts speech to text, including Indian languages and code-mixed speech. Its output modes include original-language transcription, English translation and Romanized text. | **F02, F08:** transcribe a selected traveller or local-person turn before translation or optional evidence review. Saaras alone does not perform the full two-way conversation. |
+| [**Sarvam Translate**](https://docs.sarvam.ai/api/api-guides-tutorials/models/sarvam-translate) · `sarvam-translate:v1` | Translates text across English and 22 Indian languages in a primarily formal style. | **F02, F03, F06:** translate a reviewed transcript, recognized sign text or conductor question. Preserve names, prices and times for human checking. |
+| [**Mayura**](https://docs.sarvam.ai/api/api-guides-tutorials/models/mayura) · `mayura:v1` | Offers conversational translation and control over style and output script for its supported languages. | **F02, F06:** used by the backend when an output script is requested. It is a selected path, not the default for every translation. |
+| [**Bulbul**](https://docs.sarvam.ai/api/api-guides-tutorials/models/bulbul) · `bulbul:v3` / `bulbul:v4-flash` | Turns text into spoken audio. | **F01–F03, F06, F07, F10:** play a reviewed explanation or translation. The current backend selects **v3 for Malayalam** and **v4 Flash for other configured languages**; voice quality still needs listening tests. |
+| [**Sarvam Vision / Document AI**](https://docs.sarvam.ai/api/api-guides-tutorials/models/sarvam-vision) | Extracts Indian-language text and structure from document-like images and scans. | **F03, F06:** OCR on a user-approved camera crop. It is document-focused; a moving bus board or street sign still needs real-photo accuracy testing. Local Mirage handles scene cues separately. |
+| [**Sarvam 105B**](https://docs.sarvam.ai/api/token-factory/models/sarvam-105b) · `sarvam-105b` | Produces text responses and structured plans from supplied text context. | **F01–F13 assistant entry:** proposes a bounded task from the traveller's request; Android still decides whether to activate a sensor or share data. The backend also uses it for selected code-mixed translation cases. It does not verify a bus route or a booking by itself. |
+
+**Example language path:** A traveller approves a spoken Telugu question → Saaras transcribes it → Sarvam Translate or a selected Mayura path produces Malayalam text → the traveller reviews it → Bulbul speaks it. A Malayalam reply follows the reverse path. If the traveller approves saving a fare or time, YatraLens stores the transcript as local evidence and checks it against existing trip claims. The language models do not turn a quote into a confirmed booking.
+
+[Sarvam Voice Agents](https://docs.sarvam.ai/voice-agents/overview) is a separate platform that can orchestrate speech, reasoning and telephony. **Outbound AI calling is not part of the current YatraLens prototype**; it would need its own setup, consent flow and live-call validation.
+
 ## Screenshots and demo video
 
 > Replace these placeholders with **real captures** from the Android build. Label synthetic inputs and fixtures in the demo.
