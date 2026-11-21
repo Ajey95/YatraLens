@@ -26,6 +26,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.TextView
 import android.widget.ScrollView
 import org.json.JSONObject
@@ -123,7 +124,15 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             textSize = 13f
             setTextColor(host.getColor(R.color.yl_mist))
         })
-        card.addView(TextView(host).apply {
+        val languageSettings = LinearLayout(host).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        button(card, "Change languages") {
+            languageSettings.visibility = if (languageSettings.visibility == View.GONE) View.VISIBLE else View.GONE
+        }
+        card.addView(languageSettings)
+        languageSettings.addView(TextView(host).apply {
             text = "My language"
             setTextColor(host.getColor(R.color.yl_mist))
         })
@@ -135,10 +144,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         (view as? TextView)?.setTextColor(host.getColor(R.color.yl_ivory))
                     }
             }
-            it.setSelection(2)
-            card.addView(it)
+            it.setSelection(host.getSharedPreferences("assistant_languages", 0)
+                .getInt("traveller", 2).coerceIn(0, codes.lastIndex))
+            languageSettings.addView(it)
         }
-        card.addView(TextView(host).apply {
+        languageSettings.addView(TextView(host).apply {
             text = "Local language"
             setTextColor(host.getColor(R.color.yl_mist))
         })
@@ -150,9 +160,12 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         (view as? TextView)?.setTextColor(host.getColor(R.color.yl_ivory))
                     }
             }
-            it.setSelection(1)
-            card.addView(it)
+            it.setSelection(host.getSharedPreferences("assistant_languages", 0)
+                .getInt("local", 1).coerceIn(0, codes.lastIndex))
+            languageSettings.addView(it)
         }
+        language.onItemSelectedListener = languageListener("traveller")
+        localLanguage.onItemSelectedListener = languageListener("local")
         request = EditText(host).apply {
             hint = "Your request"
             setTextColor(host.getColor(R.color.yl_ivory))
@@ -311,6 +324,26 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private fun plan() {
         val spoken = request.text.toString().trim()
         if (spoken.isBlank()) { prompt.text = "Say or type a request first."; return }
+        val localTask = when {
+            Regex("\\b(offline|emergency|helpline|no internet)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(spoken) -> "OPEN_OFFLINE"
+            Regex("\\b(memory|saved context|what did i save|remembered)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(spoken) -> "OPEN_MEMORY"
+            Regex("\\b(accessibility|talkback|large text)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(spoken) -> "OPEN_ACCESSIBILITY"
+            Regex("\\b(sensor status|mute microphone|pause camera|stop sensors)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(spoken) -> "OPEN_SENSOR_CONTROLS"
+            else -> null
+        }
+        if (localTask != null) {
+            planAction = localTask
+            destination = ""
+            prompt.text = "I can help with that on this phone."
+            prepareTask()
+            if (localTask == "OPEN_ACCESSIBILITY") action.visibility = View.VISIBLE
+            else { action.visibility = View.GONE; continueTask() }
+            return
+        }
         if (!cloud.isChecked) { prompt.text = "Approve sending this selected request to Sarvam."; return }
         prompt.text = "Working out the next step…"
         action.visibility = View.GONE
@@ -335,7 +368,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                             else -> "I found a matching travel task."
                         }
                         prepareTask()
-                        action.visibility = View.VISIBLE
+                        if (planAction in setOf("OPEN_MEMORY", "OPEN_OFFLINE", "OPEN_SENSOR_CONTROLS",
+                                "OPEN_TASKS")) {
+                            action.visibility = View.GONE
+                            continueTask()
+                        } else action.visibility = View.VISIBLE
                     }
                 }
             } catch (e: Exception) {
@@ -544,6 +581,25 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         output.text = if (entries.isEmpty()) "No saved trip context yet." else
             entries.joinToString("\n\n") {
                 "${formatTime(it.observedAt)} • ${it.title}\n${it.detail}\nSource: ${it.source}"
+            }
+        entries.filter { it.evidenceId != null }.distinctBy { it.evidenceId }.take(12)
+            .forEach { item ->
+                button(dynamicControls, "Delete saved evidence: ${item.title.take(35)}") {}
+                    .also { control ->
+                        control.setOnClickListener {
+                            if (control.tag != "confirm") {
+                                control.tag = "confirm"
+                                control.text = "Confirm permanent deletion: ${item.title.take(25)}"
+                                output.append("\nTap Confirm to remove this evidence and its derived details.")
+                            } else {
+                                val deleted = TripMemoryStore(host).use {
+                                    it.deleteEvidenceCascade(item.tripId, requireNotNull(item.evidenceId))
+                                }
+                                if (deleted) showMemory()
+                                else output.text = "That evidence was already removed."
+                            }
+                        }
+                    }
             }
         if (latest != null) TripMemoryStore(host).use { memory ->
             memory.openConflicts(latest).forEach { conflict ->
@@ -830,4 +886,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         DateTimeFormatter.ofPattern("d MMM, h:mm a").withZone(ZoneId.systemDefault())
             .format(Instant.parse(value))
     } catch (_: Exception) { value }
+
+    private fun languageListener(key: String) = object : AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+            host.getSharedPreferences("assistant_languages", 0).edit().putInt(key, position).apply()
+        }
+        override fun onNothingSelected(parent: AdapterView<*>?) {}
+    }
 }
