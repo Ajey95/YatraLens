@@ -197,6 +197,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         button(card, "Understand request") { plan() }
         action = button(card, "Continue with this task") { continueTask() }
         action.visibility = View.GONE
+        stopTrip = button(card, "End trip and stop sensors") {
+            send(TripSensingService.END)
+            output.text = "Stopping trip sensors."
+        }
+        stopTrip.visibility = View.GONE
         taskControls = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL }
         card.addView(taskControls)
         taskInput = edit(taskControls, "Task detail, such as activity or landmark").apply {
@@ -256,8 +261,6 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         speakResult.visibility = View.GONE
         saveResult = button(card, "Save reviewed text to trip memory") { saveCurrentEvidence() }
         saveResult.visibility = View.GONE
-        stopTrip = button(card, "End trip and stop sensors") { send(TripSensingService.END); output.text = "Stopping trip sensors." }
-        stopTrip.visibility = View.GONE
         button(card, "Close") { finish() }
         inner.requestFocus()
         return root
