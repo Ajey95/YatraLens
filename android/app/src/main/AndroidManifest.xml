@@ -18,12 +18,13 @@
 
     <application android:label="YatraLens" android:theme="@style/YatraLensTheme"
         android:usesCleartextTraffic="false" android:allowBackup="false">
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".HomeActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".MainActivity" android:exported="false" />
         <service android:name=".TripSensingService" android:exported="false"
             android:foregroundServiceType="camera|microphone|location" />
         <service android:name=".YatraVoiceService" android:exported="true"

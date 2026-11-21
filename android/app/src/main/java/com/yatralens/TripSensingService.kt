@@ -255,6 +255,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         activeTrip = true
+        YatraVoiceService.active?.pauseForTrip()
         WeatherState.set(null)
         SceneState.set(null)
         FeatureState.clear()
@@ -287,7 +288,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun notification(): Notification {
-        val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 1, Intent(this, HomeActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val pauseCamera = actionIntent(PAUSE_CAMERA, 2)
         val muteMic = actionIntent(MUTE_MIC, 3)
         val end = actionIntent(END, 4)
@@ -1317,7 +1318,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             if (!postedAlertKeys.add(alert.key)) continue
             val notificationId = 2000 + (alert.key.hashCode() and 0x7fffffff) % 100000
             val open = PendingIntent.getActivity(this, notificationId,
-                Intent(this, MainActivity::class.java),
+                Intent(this, HomeActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             manager.notify(notificationId, Notification.Builder(this, ALERT_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
@@ -1365,6 +1366,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         store.record("TRIP_ENDED")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        YatraVoiceService.active?.resumeAfterTrip()
     }
 
     override fun onDestroy() {

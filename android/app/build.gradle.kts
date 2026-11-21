@@ -44,6 +44,7 @@ android {
 }
 
 dependencies {
+    implementation("com.alphacephei:vosk-android:0.3.75")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-service:2.8.2")
     implementation("androidx.camera:camera-core:1.4.2")

@@ -8,7 +8,7 @@ import java.time.Instant
 import java.util.UUID
 
 /** Local source registry. A generated sentence is never an evidence source. */
-class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory.db", null, 3) {
+class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory.db", null, 4) {
     override fun onConfigure(db: SQLiteDatabase) { db.setForeignKeyConstraintsEnabled(true) }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -54,6 +54,11 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             title TEXT NOT NULL, starts_at TEXT, ends_at TEXT, place_name TEXT,
             latitude REAL, longitude REAL,
             source_id TEXT REFERENCES source(id), status TEXT NOT NULL)""")
+        db.execSQL("""CREATE TABLE context_note (
+            id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trip(id) ON DELETE CASCADE,
+            observed_at TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL,
+            source_label TEXT NOT NULL)""")
+        db.execSQL("CREATE INDEX ix_context_note_time ON context_note(trip_id, observed_at)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -62,7 +67,14 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             db.execSQL("ALTER TABLE trip_event ADD COLUMN latitude REAL")
             db.execSQL("ALTER TABLE trip_event ADD COLUMN longitude REAL")
         }
-        if (newVersion != 3) error("No migration from trip memory schema $oldVersion to $newVersion")
+        if (oldVersion < 4) {
+            db.execSQL("""CREATE TABLE context_note (
+                id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trip(id) ON DELETE CASCADE,
+                observed_at TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL,
+                source_label TEXT NOT NULL)""")
+            db.execSQL("CREATE INDEX ix_context_note_time ON context_note(trip_id, observed_at)")
+        }
+        if (newVersion != 4) error("No migration from trip memory schema $oldVersion to $newVersion")
     }
 
     fun startTrip(id: String, mode: String, at: Instant = Instant.now()) {
@@ -432,6 +444,17 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     data class TimelineEntry(val tripId: String, val observedAt: String, val title: String,
                              val detail: String, val source: String, val evidenceId: String? = null)
 
+    /** A dated task result for orientation, never a verified claim or original evidence. */
+    fun saveContextNote(tripId: String, title: String, detail: String, source: String,
+                        observedAt: Instant = Instant.now()) {
+        require(title.isNotBlank() && detail.isNotBlank() && source.isNotBlank())
+        writableDatabase.insertOrThrow("context_note", null, ContentValues().apply {
+            put("id", UUID.randomUUID().toString()); put("trip_id", tripId)
+            put("observed_at", observedAt.toString()); put("title", title.take(100))
+            put("detail", detail.take(800)); put("source_label", source.take(400))
+        })
+    }
+
     /** Meaningful saved context across trips, in time order; raw sensor packets are excluded. */
     fun recentTimeline(limit: Int = 80): List<TimelineEntry> {
         require(limit in 1..200)
@@ -464,6 +487,11 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
             while (c.moveToNext()) rows.add(TimelineEntry(c.getString(0), c.getString(1),
                 "Detail: ${c.getString(2).replace('_', ' ')}", c.getString(3),
                 "${c.getString(4)} • linked to saved evidence", c.getString(5)))
+        }
+        db.rawQuery("""SELECT n.trip_id, n.observed_at, n.title, n.detail, n.source_label
+            FROM context_note n JOIN trip t ON t.id=n.trip_id WHERE t.mode<>'TEST_FIXTURE'""", null).use { c ->
+            while (c.moveToNext()) rows.add(TimelineEntry(c.getString(0), c.getString(1),
+                c.getString(2), c.getString(3), c.getString(4)))
         }
         return rows.sortedByDescending { it.observedAt }.take(limit)
     }

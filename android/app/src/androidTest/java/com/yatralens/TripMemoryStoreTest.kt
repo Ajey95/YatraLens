@@ -28,11 +28,15 @@ class TripMemoryStoreTest {
             store.endTrip(first, older.plusSeconds(3600))
             store.startTrip(second, "CONTINUOUS", newer)
             store.saveDestination(second, "Jetty", 9.5, 76.35, "Traveller-entered ticket note")
+            store.saveContextNote(second, "Weather check", "Rain risk uncertain",
+                "Open-Meteo forecast", newer.plusSeconds(120))
             store.endTrip(second, newer.plusSeconds(3600))
             val entries = store.recentTimeline(200).filter { it.tripId == first || it.tripId == second }
             assertEquals(true, entries.any { it.tripId == first && it.detail.contains("₹1200") })
             assertEquals(true, entries.any { it.tripId == second && it.title.contains("Jetty") &&
                 it.source.contains("unverified") })
+            assertEquals(true, entries.any { it.tripId == second && it.title == "Weather check" &&
+                it.source == "Open-Meteo forecast" && it.observedAt == newer.plusSeconds(120).toString() })
             assertEquals(true, entries.zipWithNext().all { (a, b) -> a.observedAt >= b.observedAt })
             assertEquals(false, entries.any { it.source.contains("TEST_FIXTURE") })
         } finally {
