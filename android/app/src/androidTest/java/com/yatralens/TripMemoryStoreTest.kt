@@ -15,6 +15,32 @@ import java.util.UUID
 class TripMemoryStoreTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
+    @Test fun timelineCombinesSavedContextAcrossTripsAndExcludesFixtures() {
+        val store = TripMemoryStore(context)
+        val first = UUID.randomUUID().toString()
+        val second = UUID.randomUUID().toString()
+        val older = Instant.parse("2026-11-20T08:00:00Z")
+        val newer = Instant.parse("2026-11-21T08:00:00Z")
+        try {
+            store.startTrip(first, "CONVERSATION", older)
+            store.saveTranscript(first, "Fare is ₹1200", "en-IN", 1500,
+                observedAt = older.plusSeconds(60))
+            store.endTrip(first, older.plusSeconds(3600))
+            store.startTrip(second, "CONTINUOUS", newer)
+            store.saveDestination(second, "Jetty", 9.5, 76.35, "Traveller-entered ticket note")
+            store.endTrip(second, newer.plusSeconds(3600))
+            val entries = store.recentTimeline(200).filter { it.tripId == first || it.tripId == second }
+            assertEquals(true, entries.any { it.tripId == first && it.detail.contains("₹1200") })
+            assertEquals(true, entries.any { it.tripId == second && it.title.contains("Jetty") &&
+                it.source.contains("unverified") })
+            assertEquals(true, entries.zipWithNext().all { (a, b) -> a.observedAt >= b.observedAt })
+            assertEquals(false, entries.any { it.source.contains("TEST_FIXTURE") })
+        } finally {
+            store.writableDatabase.delete("trip", "id IN (?,?)", arrayOf(first, second))
+            store.close()
+        }
+    }
+
     @Test fun bookingAndOperatorQuoteKeepBothSourcesAndRequireResolution() {
         val store = TripMemoryStore(context)
         val tripId = UUID.randomUUID().toString()

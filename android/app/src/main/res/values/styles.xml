@@ -1,0 +1,10 @@
+<resources>
+    <style name="YatraLensTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/yl_night</item>
+        <item name="android:colorAccent">@color/yl_mist</item>
+        <item name="android:statusBarColor">@color/yl_night</item>
+        <item name="android:navigationBarColor">@color/yl_night</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

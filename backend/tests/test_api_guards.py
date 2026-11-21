@@ -42,3 +42,12 @@ def test_geo_check_requires_consent_and_returns_sourced_uncertainty(monkeypatch)
     assert result.status_code == 200
     assert result.json()["status"] == "POSSIBLE_DESTINATION_MISMATCH"
     assert result.json()["destination_source_id"] == "fixture-booking"
+
+
+def test_assistant_plan_requires_selected_text_consent(monkeypatch):
+    monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
+    client = TestClient(app)
+    payload = {"utterance": "Read this bus board", "language_code": "en-IN"}
+    assert client.post("/v1/assistant/plan", json=payload).status_code == 401
+    assert client.post("/v1/assistant/plan", json=payload,
+                       headers={"Authorization": "Bearer test-token"}).status_code == 403

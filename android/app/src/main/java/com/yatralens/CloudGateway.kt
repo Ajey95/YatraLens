@@ -18,7 +18,18 @@ object CloudGateway {
     data class Translation(val text: String, val sourceLanguage: String, val targetLanguage: String,
                            val reviewFlags: List<String>)
     data class WeatherAssessment(val decision: String, val reason: String, val sourceUrl: String,
-                                 val retrievedAt: String, val rainPercent: Double?, val gustKmh: Double?)
+                                 val retrievedAt: String, val rainPercent: Double?, val gustKmh: Double?,
+                                 val forecastSourceUrl: String, val officialWarningStatus: String,
+                                 val officialWarningIssueDate: String?)
+
+    fun planAssistant(utterance: String, followUpAnswer: String?, language: String): JSONObject {
+        require(utterance.isNotBlank() && utterance.length <= 1000)
+        require(language in setOf("en-IN", "ml-IN", "te-IN", "hi-IN"))
+        return postJson("/v1/assistant/plan", JSONObject()
+            .put("utterance", utterance)
+            .put("follow_up_answer", followUpAnswer)
+            .put("language_code", language))
+    }
 
     fun assessWeather(lat: Double, lon: Double, start: Instant, end: Instant,
                       activity: String): WeatherAssessment {
@@ -27,11 +38,15 @@ object CloudGateway {
             .put("lat", lat).put("lon", lon)
             .put("event_start", start.toString()).put("event_end", end.toString())
             .put("activity_label", activity))
+        val forecastSource = json.optString("forecast_source_url")
+        val officialSource = json.optString("alert_source_url")
         return WeatherAssessment(json.optString("decision"), json.optString("reason"),
-            json.optString("forecast_source_url"), json.optString("forecast_retrieved_at"),
+            officialSource.ifBlank { forecastSource }, json.optString("forecast_retrieved_at"),
             if (json.isNull("max_precipitation_probability_percent")) null
                 else json.optDouble("max_precipitation_probability_percent"),
-            if (json.isNull("max_wind_gust_kmh")) null else json.optDouble("max_wind_gust_kmh"))
+            if (json.isNull("max_wind_gust_kmh")) null else json.optDouble("max_wind_gust_kmh"),
+            forecastSource, json.optString("official_warning_status"),
+            json.optString("official_warning_issue_date").takeIf { it.isNotBlank() })
     }
 
     fun interpretOcr(text: String, imageSha256: String, sourceLanguage: String,

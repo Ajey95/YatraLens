@@ -2,6 +2,13 @@
 
 This file reports implemented behavior, not PRD acceptance. The product brief is `YATRALENS_MASTER_PRD.md`. The build is a local development prototype.
 
+## Voice-first assistant status (2026-11-22)
+
+- The Android build can be selected as the phone's default assistant. On the iQOO Android 16 test phone, `KEYCODE_ASSIST` summoned an animated green system-hosted YatraLens bubble over the launcher and over another app while the YatraLens activity was closed. The test temporarily selected YatraLens, then restored Google as the default assistant; both role and secure service setting were verified restored.
+- The bubble asks what help is needed and accepts one short on-device recognition turn where Android provides that engine, or typed text. With per-request cloud consent, Sarvam 105B returns a constrained feature plan. A live bubble test for “Read the bus board” asked where the traveller was going; a second request returned the bus-board action. Continuing opened the matching YatraLens assistant task after an initial Android voice-activity compatibility error was fixed and retested.
+- The app's BioGym-inspired forest, sage, sand and ivory theme is installed. A cross-trip, time-sorted contextual-memory timeline and a three-item home preview are built; one physical-phone database test for cross-trip timeline aggregation passed. The timeline screen itself has not had a manual phone review after this change.
+- **Unfinished against the requested UX:** Saying “Hey YatraLens” while the app is closed does not yet wake it. The tested invocation uses Android's assistant key/gesture. Android's continuous `SpeechRecognizer` is explicitly unsuitable for a wake loop; a custom local keyword detector/model and power/false-trigger testing are still required. Also, camera, GPS and conversation tasks currently hand off from the bubble to the main assistant task screen for sensor consent and execution. The bubble does not yet execute all F01–F13 inside itself. No feature may be described as fully voice-only on this build.
+
 ## Feature acceptance snapshot
 
 | Feature | Current implementation | Remaining acceptance gate |
@@ -10,10 +17,10 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 | F02 Talk & Listen | Both phone speech directions translated and spoken after review; typed fallback added | Fluent-human quality check, typed flow and longer conversation test |
 | F03 Read Anything | Real Malayalam camera OCR; selectable OCR language, region blocks, translation and speech controls | Multilingual notice accuracy, translated action review and audio path on phone |
 | F04 Geospatial Intelligence | Sourced manual booking point, accuracy-aware distance/bearing check and map intent | Real booking-point comparison and map handoff on phone |
-| F05 Weather-Aware Guide | Live Open-Meteo trip forecast and source-gated alert policy | Live risk notification; official IMD feed access |
+| F05 Weather-Aware Guide | Live Open-Meteo trip forecast, public Kerala IMD warning-page parser and source-gated alert policy | Live risk notification; structured official IMD API access and parser resilience |
 | F06 Smart Transport | Source-aware positive/negative/unknown policy; OCR-to-board text control and reviewed conductor-question translation/speech | Verified route data, live bus-board check and conductor speech check |
 | F07 Cultural Companion | Official-source Ambalappuzha pilot entry with identity caveat | Landmark lookup on phone and broader curated corpus |
-| F08 Trip Memory | Reviewed transcript/OCR evidence, tentative agreement proposals, local claim save and cascade deletion | Live proposal review/save and exact quote readback |
+| F08 Trip Memory | Reviewed transcript/OCR evidence, tentative agreement proposals, local claim save, cascade deletion and cross-trip time-ordered context view | Live proposal review/save, exact quote readback and timeline UI review |
 | F09 Evidence & Conflicts | Temporal conflict detection, source cards, user resolution audit and alert policy | Live disagreement flow and reminder-blocking UI check |
 | F10 Accessibility | Large actions, screen-reader labels/live notices and system-bar handling | TalkBack, large-text and contrast audit |
 | F11 Offline Assistance | Local memory, reviewed phrasebook, booking point, offline banner and sourced emergency references | Airplane-mode phone run, downloadable maps and optional local ASR |
@@ -53,6 +60,8 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 
 ## Backend checks
 
+- `/v1/assistant/plan` uses Sarvam 105B structured output with a deterministic F01–F13 action allowlist. The bus example is forced into transport reasoning, asks for the traveller's destination when absent, and never treats a generated route or destination as verified evidence. It proposes an action; Android still gates camera, speech, GPS and cloud sharing.
+- The public official IMD Kerala subdivision warning page was parsed live on 2026-11-21 and combined with Open-Meteo assessment for a bounded Alappuzha pilot area. Malformed, stale or out-of-area official data returns `unavailable`; this is date-level warning context, not a route-specific water-safety clearance. The official structured IMD API still needs access credentials, and changes to the page layout can break the parser.
 - FastAPI exposes consent-gated Sarvam speech recognition, translation, speech synthesis, and selected-crop OCR; Open-Meteo forecast and activity overlap assessment; source-aware claim evaluation; and honest `UNKNOWN` transport/official-warning fallbacks.
 - A consent-gated geospatial check compares a fresh, accurate GPS fix with a saved destination and returns distance, bearing and a possible mismatch without claiming a route or exact entrance. Nearby-jetty fixtures and stale-fix behavior pass backend tests; no user booking coordinates have been entered on the phone.
 - A separate phone location consent gates an on-demand forecast check for an entered activity/start offset/duration. The app records source URL and retrieval time in memory. A live consented phone run succeeded as described above.
@@ -65,7 +74,7 @@ This file reports implemented behavior, not PRD acceptance. The product brief is
 - The traveller reviewed that Telugu text and tapped Speak; Telugu Bulbul audio was audible on the phone. Playback finished and the microphone resumed. Both turn directions therefore work through the device, with the reverse input labeled synthetic.
 - The final conversation-only mode was verified separately on the phone: `Camera OFF • Mic ON • Location ON`, live mic packets and a GPS fix, with no camera frame pipeline opened. End Trip turned the camera and mic off.
 - The on-demand boat-ride weather check ran on the physical phone with separate location-sharing consent, a live GPS fix, and a planned start 60 minutes later. The app displayed `NO_ALERT`, maximum rain probability 0%, maximum gust 7.9 km/h, the Open-Meteo source URL, and retrieval time. This means configured forecast thresholds were not met for that interval; it is not an official no-warning or water-safety clearance. The first attempt rejected a transient coarse location update despite a precise GPS fix shortly before it. A follow-up code change now retains a more accurate recent fix; that change built successfully but has not been rerun on the phone.
-- `python -m pytest -q backend/tests` currently passes 18 tests. The Android device suite passes 16 tests, including sourced OCR language, thermal restart hysteresis, dim-luminance classification, alert time boundaries and defaulting a proposed detail to its saved transcript's observation time. Backend does not retain user media or trip history.
+- `python -m pytest -q backend/tests` currently passes 25 tests. The earlier Android device suite passed 16 tests, including sourced OCR language, thermal restart hysteresis, dim-luminance classification, alert time boundaries and defaulting a proposed detail to its saved transcript's observation time. One additional targeted cross-trip timeline test passed on the phone. Backend does not retain user media or trip history.
 
 ## Not complete against the PRD
 

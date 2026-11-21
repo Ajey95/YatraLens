@@ -24,6 +24,8 @@ from backend.app.curated import cultural_lookup, discover
 from backend.app.transport_policy import assess_route
 from backend.app.agreement_policy import propose_agreements
 from backend.app.scan_policy import scan_cues
+from backend.app.imd_warning import SOURCE_URL as IMD_KERALA_URL, parse_kerala_warning, combine_with_forecast, in_alappuzha_pilot
+from backend.app.assistant_plan import SuggestedIntent, finalize_plan
 
 
 def load_local_env() -> None:
@@ -180,6 +182,58 @@ class OcrInterpretRequest(BaseModel):
     target_language_code: str
 
 
+class AssistantPlanRequest(BaseModel):
+    utterance: str = Field(min_length=1, max_length=1000)
+    follow_up_answer: str | None = Field(default=None, max_length=200)
+    language_code: Literal["en-IN", "ml-IN", "te-IN", "hi-IN"]
+
+
+ASSISTANT_INTENT_SCHEMA = {
+    "type": "object", "properties": {
+        "feature": {"type": "string", "enum": [f"F{i:02d}" for i in range(1, 14)] + ["UNKNOWN"]},
+        "destination": {"type": "string"},
+        "follow_up_question": {"type": "string"},
+    }, "required": ["feature", "destination", "follow_up_question"],
+    "additionalProperties": False,
+}
+
+
+@app.post("/v1/assistant/plan")
+async def assistant_plan(payload: AssistantPlanRequest, _: None = Depends(require_auth),
+                         __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    """Sarvam plans one task; the phone alone decides whether to activate a sensor."""
+    messages = [
+        {"role": "system", "content": (
+            "You route requests for a travel assistant in Kerala. Return only a task classification. "
+            "F01 scene question, F02 two-way speech, F03 read text, F04 booking/location, "
+            "F05 weather, F06 bus route/board, F07 culture, F08 saved promises, "
+            "F09 conflicting trip details, F10 accessibility, F11 offline/emergency, "
+            "F12 local craft discovery, F13 sensor controls; UNKNOWN otherwise. "
+            "Extract a destination only when the traveller explicitly says where they want to go. "
+            "Never answer route, weather, history, or booking facts. Do not request private data. "
+            "Use an empty string for unknown fields."
+        )},
+        {"role": "user", "content": f"Language: {payload.language_code}\nRequest: {payload.utterance}\n"
+         f"Follow-up answer: {payload.follow_up_answer or ''}"},
+    ]
+    body = {"model": "sarvam-105b", "messages": messages, "reasoning_effort": "low",
+            "max_tokens": 350, "response_format": {"type": "json_schema",
+            "json_schema": {"name": "yatralens_task", "strict": True,
+                            "schema": ASSISTANT_INTENT_SCHEMA}}}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f"{SARVAM}/v1/chat/completions", json=body,
+                                         headers={"api-subscription-key": sarvam_key()})
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            suggestion = SuggestedIntent.model_validate_json(content)
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        raise upstream_error(exc) from exc
+    plan = finalize_plan(payload.utterance, payload.follow_up_answer, suggestion)
+    return {**plan, "model": "sarvam-105b", "user_request": payload.utterance,
+            "requires_action_confirmation": True}
+
+
 @app.get("/v1/health")
 def health() -> dict[str, Any]:
     return {
@@ -187,7 +241,7 @@ def health() -> dict[str, Any]:
         "checked_at": now_utc(),
         "sarvam_configured": bool(os.environ.get("SARVAM_API_KEY")),
         "weather_provider": "Open-Meteo forecast",
-        "official_warnings": "unavailable until a permitted feed is verified",
+        "official_warnings": "public IMD Kerala subdivision page; checked on demand for Alappuzha pilot",
         "personal_memory_storage": "Android device",
     }
 
@@ -200,8 +254,9 @@ def capabilities(_: None = Depends(require_auth)) -> dict[str, Any]:
         "translation": {"available": configured, "provider": "Sarvam", "model": "sarvam-translate:v1"},
         "text_to_speech": {"available": configured, "provider": "Sarvam", "malayalam_model": "bulbul:v3"},
         "weather_forecast": {"available": True, "provider": "Open-Meteo"},
-        "official_weather_warning": {"available": False, "reason": "No verified structured IMD feed"},
+        "official_weather_warning": {"available": True, "scope": "Alappuzha pilot using dated Kerala subdivision page; live availability may change"},
         "transport_route": {"available": False, "reason": "No verified pilot route dataset"},
+        "assistant_planning": {"available": configured, "provider": "Sarvam", "model": "sarvam-105b"},
     }
 
 
@@ -301,10 +356,22 @@ async def weather_forecast(lat: float, lon: float, _: None = Depends(require_aut
             "hourly_units": forecast.get("hourly_units"), "hourly": forecast.get("hourly", {})}
 
 
+async def read_public_imd_warning() -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.get(IMD_KERALA_URL)
+            response.raise_for_status()
+            if len(response.content) > 500_000:
+                raise ValueError("IMD page exceeded the parser size limit")
+        return parse_kerala_warning(response.text, datetime.now(timezone.utc))
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"status": "unavailable", "reason": f"IMD page could not be checked: {type(exc).__name__}"}
+
+
 @app.get("/v1/weather/warnings")
-def weather_warnings(_: None = Depends(require_auth)) -> dict[str, Any]:
-    return {"status": "unavailable", "official_page": "https://mausam.imd.gov.in/",
-            "reason": "A structured, licensed warning source has not been verified"}
+async def weather_warnings(_: None = Depends(require_auth)) -> dict[str, Any]:
+    return {**await read_public_imd_warning(), "source_url": IMD_KERALA_URL,
+            "scope_note": "Kerala subdivision advisory; not a district closure or a boat cancellation"}
 
 
 @app.post("/v1/weather/assess")
@@ -314,10 +381,14 @@ async def weather_assess(payload: WeatherAssessmentRequest, _: None = Depends(re
         raise HTTPException(status_code=422, detail="Activity end must follow start")
     forecast = await weather_forecast(payload.lat, payload.lon, None, None)
     decision = assess_forecast(payload.event_start, payload.event_end, forecast["hourly"])
+    parsed = await read_public_imd_warning() if in_alappuzha_pilot(payload.lat, payload.lon) else {}
+    decision = combine_with_forecast(decision, parsed, payload.lat, payload.lon,
+                                     payload.event_start, payload.event_end)
     return {**decision, "activity_label": payload.activity_label,
             "forecast_source_url": forecast["source_url"],
             "forecast_retrieved_at": forecast["retrieved_at"],
-            "source_kind": "forecast_not_official_warning"}
+            "source_kind": "forecast_with_kerala_subdivision_check" if parsed else
+                           "forecast_not_official_warning"}
 
 
 @app.post("/v1/text/translate")

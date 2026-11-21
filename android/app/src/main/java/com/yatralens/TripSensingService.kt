@@ -73,6 +73,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         const val SPEAK_TRANSLATION = "com.yatralens.SPEAK_TRANSLATION"
         const val SPEAK_REVIEWED_TEXT = "com.yatralens.SPEAK_REVIEWED_TEXT"
         const val TRANSLATE_TYPED = "com.yatralens.TRANSLATE_TYPED"
+        const val PLAN_ASSISTANT_TEXT = "com.yatralens.PLAN_ASSISTANT_TEXT"
         const val CHECK_WEATHER = "com.yatralens.CHECK_WEATHER"
         const val INTERPRET_OCR = "com.yatralens.INTERPRET_OCR"
         const val PROPOSE_AGREEMENT = "com.yatralens.PROPOSE_AGREEMENT"
@@ -132,6 +133,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var turnOwner = "TRAVELLER"
     private var turnSourceLanguage = "te-IN"
     private var turnTargetLanguage = "ml-IN"
+    private var assistantTurn = false
+    private var assistantOriginalRequest = ""
     private var turnId = 0L
     @Volatile private var lastTranscript: CloudGateway.Transcript? = null
     @Volatile private var lastTranscriptDurationMs = 0L
@@ -216,6 +219,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             SPEAK_TRANSLATION -> speakTranslation(intent)
             SPEAK_REVIEWED_TEXT -> speakReviewedText(intent)
             TRANSLATE_TYPED -> translateTyped(intent)
+            PLAN_ASSISTANT_TEXT -> planAssistantText(intent)
             CHECK_WEATHER -> checkWeather(intent)
             INTERPRET_OCR -> interpretOcr(intent)
             PROPOSE_AGREEMENT -> proposeAgreement(intent)
@@ -715,6 +719,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         turnOwner = if (intent.getStringExtra("owner") == "LOCAL") "LOCAL" else "TRAVELLER"
+        assistantTurn = intent.getBooleanExtra("assistant", false)
+        assistantOriginalRequest = if (assistantTurn) intent.getStringExtra("originalRequest").orEmpty() else ""
         turnSourceLanguage = intent.getStringExtra("sourceLanguage") ?: "te-IN"
         turnTargetLanguage = intent.getStringExtra("targetLanguage") ?: "ml-IN"
         turnId = SystemClock.elapsedRealtimeNanos()
@@ -727,10 +733,14 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         lastTranscript = null
         FeatureState.set("agreement", null)
         ReviewedEvidenceState.set(null, null)
-        ConversationState.set(ConversationTurn(turnId, turnOwner, "", "",
+        if (assistantTurn) {
+            FeatureState.set("assistant transcript", null)
+            FeatureState.set("assistant plan", null)
+            SensorState.set("assistant", "Listening to your selected request; maximum 10 seconds")
+        } else ConversationState.set(ConversationTurn(turnId, turnOwner, "", "",
             turnSourceLanguage, turnTargetLanguage, "RECORDING"))
         SensorState.set("spoken turn", "recording selected turn; maximum 10 seconds")
-        store.record("TURN_STARTED", "owner=$turnOwner")
+        store.record("TURN_STARTED", "owner=$turnOwner;assistant=$assistantTurn")
     }
 
     private fun finishTurnLocked() {
@@ -761,27 +771,48 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val source = turnSourceLanguage
         val target = turnTargetLanguage
         val selectedTurnId = turnId
+        val forAssistant = assistantTurn
+        val originalRequest = assistantOriginalRequest
         SensorState.set("spoken turn", "transcribing selected turn via Sarvam")
         Thread({
             try {
                 val result = CloudGateway.transcribePcm16(pcm)
-                lastTranscript = result
-                lastTranscriptDurationMs = pcm.size / 32L
+                if (!forAssistant) {
+                    lastTranscript = result
+                    lastTranscriptDurationMs = pcm.size / 32L
+                }
                 SensorState.set("spoken turn", "${result.language ?: "unknown language"}: ${result.text}")
                 store.record("TURN_TRANSCRIBED", "model=${result.model};language=${result.language};owner=$owner")
                 val detected = result.language?.takeIf { it in SUPPORTED_TURN_LANGUAGES } ?: source
-                ConversationState.set(ConversationTurn(selectedTurnId, owner, result.text, "",
-                    detected, target, "TRANSLATING"))
-                try {
-                    val translation = CloudGateway.translateText(result.text, detected, target)
-                    ConversationState.set(ConversationTurn(selectedTurnId, owner, result.text,
-                        translation.text, detected, target, "READY_FOR_REVIEW", translation.reviewFlags))
-                    store.record("TURN_TRANSLATED", "owner=$owner;source=$detected;target=$target")
-                } catch (e: Exception) {
+                if (forAssistant) {
+                    if (!activeTrip || turnId != selectedTurnId) return@Thread
+                    FeatureState.set("assistant transcript", JSONObject()
+                        .put("text", result.text).put("role", if (originalRequest.isBlank()) "request" else "follow_up"))
+                    SensorState.set("assistant", "Planning a response to the selected speech")
+                    try {
+                        val plan = CloudGateway.planAssistant(originalRequest.ifBlank { result.text },
+                            result.text.takeIf { originalRequest.isNotBlank() }, detected)
+                        if (activeTrip && turnId == selectedTurnId) {
+                            FeatureState.set("assistant plan", plan)
+                            SensorState.set("assistant", plan.optString("status"))
+                        }
+                    } catch (e: Exception) {
+                        SensorState.set("assistant", "Planning unavailable: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                } else {
                     ConversationState.set(ConversationTurn(selectedTurnId, owner, result.text, "",
-                        detected, target, "TRANSLATION_UNAVAILABLE"))
-                    SensorState.set("spoken turn", "Transcript ready; translation unavailable: ${e.message ?: e.javaClass.simpleName}")
-                    store.record("TURN_TRANSLATION_FAILED", e.javaClass.simpleName)
+                        detected, target, "TRANSLATING"))
+                    try {
+                        val translation = CloudGateway.translateText(result.text, detected, target)
+                        ConversationState.set(ConversationTurn(selectedTurnId, owner, result.text,
+                            translation.text, detected, target, "READY_FOR_REVIEW", translation.reviewFlags))
+                        store.record("TURN_TRANSLATED", "owner=$owner;source=$detected;target=$target")
+                    } catch (e: Exception) {
+                        ConversationState.set(ConversationTurn(selectedTurnId, owner, result.text, "",
+                            detected, target, "TRANSLATION_UNAVAILABLE"))
+                        SensorState.set("spoken turn", "Transcript ready; translation unavailable: ${e.message ?: e.javaClass.simpleName}")
+                        store.record("TURN_TRANSLATION_FAILED", e.javaClass.simpleName)
+                    }
                 }
             } catch (e: Exception) {
                 SensorState.set("spoken turn", "transcription unavailable: ${e.message ?: e.javaClass.simpleName}")
@@ -793,7 +824,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private fun saveTranscript(approved: Boolean) {
         val transcript = lastTranscript
         val id = tripId
-        if (!approved || transcript == null || id == null) {
+        if (!approved || assistantTurn || transcript == null || id == null) {
             SensorState.set("spoken turn", "No reviewed transcript to save")
             return
         }
@@ -841,6 +872,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val kind = when (intent.getStringExtra("kind")) {
             "scene translation" -> "scene translation"
             "transport question" -> "transport question"
+            "assistant response" -> "assistant response"
             else -> "typed translation"
         }
         if (input.isBlank() || input.length > 2000 || source !in SUPPORTED_TURN_LANGUAGES ||
@@ -854,6 +886,19 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 .put("original_text", input).put("translated_text", translated.text)
                 .put("source_language", source).put("target_language", target)
                 .put("review_flags", JSONArray(translated.reviewFlags))
+        }
+    }
+
+    private fun planAssistantText(intent: Intent) {
+        val request = intent.getStringExtra("utterance")?.trim().orEmpty()
+        val answer = intent.getStringExtra("followUpAnswer")?.trim()?.takeIf { it.isNotBlank() }
+        val language = intent.getStringExtra("language")?.trim().orEmpty()
+        if (request.isBlank() || request.length > 1000 || language !in SUPPORTED_TURN_LANGUAGES) {
+            SensorState.set("assistant plan", "Enter a request and select a supported language")
+            return
+        }
+        runCloudFeature("assistant plan", intent.getBooleanExtra("cloudApproved", false)) {
+            CloudGateway.planAssistant(request, answer, language)
         }
     }
 

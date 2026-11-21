@@ -28,7 +28,7 @@ object ContextDecisionEngine {
             !forecast.eventStart.isAfter(now.plus(Duration.ofHours(24)))) {
             alerts.add(ContextAlert("forecast:${forecast.activity}:${forecast.eventStart}",
                 "Check your ${forecast.activity} plan",
-                "The forecast overlaps this activity. Confirm operating status with the operator.",
+                "Weather information overlaps this activity. Confirm operating status with the operator.",
                 forecast.sourceUrl, "CAUTION"))
         }
         return alerts

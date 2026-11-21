@@ -429,6 +429,45 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     data class EvidenceEntry(val id: String, val observedAt: String, val title: String,
                              val provider: String, val excerpt: String)
 
+    data class TimelineEntry(val tripId: String, val observedAt: String, val title: String,
+                             val detail: String, val source: String, val evidenceId: String? = null)
+
+    /** Meaningful saved context across trips, in time order; raw sensor packets are excluded. */
+    fun recentTimeline(limit: Int = 80): List<TimelineEntry> {
+        require(limit in 1..200)
+        val db = readableDatabase
+        val rows = mutableListOf<TimelineEntry>()
+        db.rawQuery("SELECT id, started_at, ended_at, mode FROM trip WHERE mode<>'TEST_FIXTURE'", null).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getString(0)
+                rows.add(TimelineEntry(id, c.getString(1), "Trip started", c.getString(3), "YatraLens"))
+                if (!c.isNull(2)) rows.add(TimelineEntry(id, c.getString(2), "Trip ended",
+                    "Camera, microphone and location stopped", "YatraLens"))
+            }
+        }
+        db.rawQuery("""SELECT s.trip_id, s.observed_at, s.title, e.excerpt, s.provider, e.id
+            FROM evidence e JOIN source s ON s.id=e.source_id
+            JOIN trip t ON t.id=s.trip_id WHERE t.mode<>'TEST_FIXTURE'""", null).use { c ->
+            while (c.moveToNext()) rows.add(TimelineEntry(c.getString(0), c.getString(1),
+                c.getString(2) ?: "Saved evidence", c.getString(3) ?: "", c.getString(4), c.getString(5)))
+        }
+        db.rawQuery("""SELECT e.trip_id, s.observed_at, e.place_name, s.excerpt, s.provider
+            FROM trip_event e JOIN source s ON s.id=e.source_id
+            JOIN trip t ON t.id=e.trip_id WHERE t.mode<>'TEST_FIXTURE'""", null).use { c ->
+            while (c.moveToNext()) rows.add(TimelineEntry(c.getString(0), c.getString(1),
+                "Booking point: ${c.getString(2) ?: "unnamed"}", c.getString(3) ?: "",
+                "${c.getString(4)} • traveller entered, unverified"))
+        }
+        db.rawQuery("""SELECT c.trip_id, c.observed_at, c.predicate, c.raw_value,
+            c.verification_state, c.evidence_id FROM claim c
+            JOIN trip t ON t.id=c.trip_id WHERE t.mode<>'TEST_FIXTURE'""", null).use { c ->
+            while (c.moveToNext()) rows.add(TimelineEntry(c.getString(0), c.getString(1),
+                "Detail: ${c.getString(2).replace('_', ' ')}", c.getString(3),
+                "${c.getString(4)} • linked to saved evidence", c.getString(5)))
+        }
+        return rows.sortedByDescending { it.observedAt }.take(limit)
+    }
+
     fun recentEvidenceItems(tripId: String): List<EvidenceEntry> = readableDatabase.rawQuery(
         """SELECT e.id, s.observed_at, s.title, s.provider, e.excerpt FROM evidence e
            JOIN source s ON s.id=e.source_id WHERE s.trip_id=?

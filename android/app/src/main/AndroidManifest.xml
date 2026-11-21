@@ -12,8 +12,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+    </queries>
 
-    <application android:label="YatraLens" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+    <application android:label="YatraLens" android:theme="@style/YatraLensTheme"
         android:usesCleartextTraffic="false" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
@@ -23,6 +26,22 @@
         </activity>
         <service android:name=".TripSensingService" android:exported="false"
             android:foregroundServiceType="camera|microphone|location" />
+        <service android:name=".YatraVoiceService" android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data android:name="android.voice_interaction"
+                android:resource="@xml/yatra_voice_interaction" />
+        </service>
+        <service android:name=".YatraVoiceSessionService" android:exported="false"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <service android:name=".YatraRecognitionService" android:exported="true"
+            android:permission="android.permission.BIND_SPEECH_RECOGNITION_SERVICE">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
 
