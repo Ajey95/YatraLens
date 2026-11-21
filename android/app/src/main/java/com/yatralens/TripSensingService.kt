@@ -1037,21 +1037,39 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
 
     private fun checkWeather(intent: Intent) {
         WeatherState.set(null)
+        val stateKey = if (intent.getBooleanExtra("currentOnly", false)) "current weather" else "weather"
         if (!intent.getBooleanExtra("locationCloudApproved", false)) {
-            SensorState.set("weather", "Approve sharing current location for this forecast")
+            SensorState.set(stateKey, "Approve sharing current location for this forecast")
             return
         }
         if (!activeTrip || !PhysicalContextEngine.fresh(SensorKind.LOCATION, 120_000)) {
-            SensorState.set("weather", "Fresh GPS fix unavailable; choose a place manually")
+            SensorState.set(stateKey, "Fresh GPS fix unavailable; choose a place manually")
             return
         }
         if (PhysicalContextEngine.situation.value.device.networkAvailable != true) {
-            SensorState.set("weather", "Offline; live forecast unavailable")
+            SensorState.set(stateKey, "Offline; live forecast unavailable")
             return
         }
         val location = PhysicalContextEngine.situation.value.location ?: return
         if (location.accuracyM > 100f) {
-            SensorState.set("weather", "GPS accuracy too low; choose a place manually")
+            SensorState.set(stateKey, "GPS accuracy too low; choose a place manually")
+            return
+        }
+        if (intent.getBooleanExtra("currentOnly", false)) {
+            FeatureState.set("current weather", null)
+            val selectedTripId = tripId
+            SensorState.set("current weather", "Checking current conditions")
+            Thread({
+                try {
+                    val result = CloudGateway.currentWeather(location.lat, location.lon)
+                    if (activeTrip && tripId == selectedTripId) {
+                        FeatureState.set("current weather", result)
+                        SensorState.set("current weather", result.optString("status"))
+                    }
+                } catch (e: Exception) {
+                    SensorState.set("current weather", "Current weather unavailable: ${e.javaClass.simpleName}")
+                }
+            }, "YatraLensCurrentWeather").start()
             return
         }
         val startMinutes = intent.getIntExtra("startMinutes", 0)

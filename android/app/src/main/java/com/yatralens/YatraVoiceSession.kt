@@ -121,6 +121,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private var awaitingBookingName = false
     private var awaitingBookingHere = false
     private var bookingLocationConfirmed = false
+    private var weatherIsCurrent = false
     private var speechSerial = 0L
     private var listenEpoch = 0L
     private var recognitionFailures = 0
@@ -446,6 +447,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         awaitingBookingName = false
         awaitingBookingHere = false
         bookingLocationConfirmed = false
+        weatherIsCurrent = false
         planAction = ""
         YatraVoiceService.active?.pauseForSession()
         window.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
@@ -827,10 +829,13 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         awaitingBookingName = false
         awaitingBookingHere = false
         bookingLocationConfirmed = false
+        weatherIsCurrent = planAction == "OPEN_WEATHER" &&
+            isCurrentWeatherRequest(request.text.toString())
         sensorConsent.isChecked = false
         shareConsent.isChecked = false
         speechConsent.isChecked = false
-        taskInput.visibility = if (planAction in setOf("OPEN_WEATHER", "OPEN_CULTURE", "OPEN_DISCOVERY"))
+        taskInput.visibility = if ((planAction == "OPEN_WEATHER" && !weatherIsCurrent) ||
+            planAction in setOf("OPEN_CULTURE", "OPEN_DISCOVERY"))
             View.VISIBLE else View.GONE
         taskInput.setText(when (planAction) {
             "OPEN_WEATHER" -> answer.text.toString().trim().ifBlank {
@@ -841,10 +846,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             }
             else -> ""
         })
-        weatherStart.visibility = if (planAction == "OPEN_WEATHER") View.VISIBLE else View.GONE
+        weatherStart.visibility = if (planAction == "OPEN_WEATHER" && !weatherIsCurrent)
+            View.VISIBLE else View.GONE
         weatherDuration.visibility = weatherStart.visibility
         if (planAction == "OPEN_WEATHER")
-            weatherStart.setText((weatherStartFromSpeech(request.text.toString()) ?: 60).toString())
+            weatherStart.setText((weatherStartFromSpeech(request.text.toString()) ?: 0).toString())
         val booking = planAction == "OPEN_BOOKING"
         listOf(placeName, placeLat, placeLon, placeSource).forEach {
             it.visibility = if (booking) View.VISIBLE else View.GONE
@@ -868,6 +874,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             "CAPTURE_TEXT" -> "Send one selected crop to Sarvam and save its recognized text in trip memory"
             "CAPTURE_BUS_BOARD" -> "Send one selected camera crop to Sarvam"
             "OPEN_TALK" -> "Translate, speak and save each selected turn with Sarvam"
+            "OPEN_WEATHER" -> "Send this current GPS fix for the weather check"
             else -> "Send this current GPS fix for the selected check"
         }
         output.text = ""
@@ -881,8 +888,10 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         stopTrip.visibility = if (PhysicalContextEngine.situation.value.tripId != null) View.VISIBLE else View.GONE
         action.text = "Do this in the bubble"
         if (voiceFlow && needsSensors) {
-            prompt.text = if (planAction == "OPEN_WEATHER")
-                "I can check the two hours starting ${weatherWindowLabel(weatherStart.text.toString().toIntOrNull() ?: 60)}. Allow location and sharing."
+            prompt.text = if (planAction == "OPEN_WEATHER" && weatherIsCurrent)
+                "I can tell you the current weather here. Allow location and sharing."
+            else if (planAction == "OPEN_WEATHER")
+                "I can check the planned activity starting ${weatherWindowLabel(weatherStart.text.toString().toIntOrNull() ?: 0)}. Allow location and sharing."
             else "I can help. Allow the shown sensors and sharing to start this task."
             tts?.speak(prompt.text.toString(), TextToSpeech.QUEUE_FLUSH, null, "assistant-consent")
             setMicStatus("MIC OFF · Waiting for task approval", false)
@@ -955,6 +964,14 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 }
             }
             "OPEN_WEATHER" -> {
+                if (weatherIsCurrent) {
+                    FeatureState.set("current weather", null)
+                    send(TripSensingService.CHECK_WEATHER,
+                        "locationCloudApproved" to true, "currentOnly" to true)
+                    output.text = "Checking current conditions at your location…"
+                    setStage("WAIT_current weather")
+                    return
+                }
                 val start = weatherStart.text.toString().toIntOrNull()
                 val duration = weatherDuration.text.toString().toIntOrNull()
                 if (start == null || start !in 0..2880 || duration == null || duration !in 1..720) {
@@ -1505,6 +1522,14 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 }
                 else -> if (taskStage.startsWith("WAIT_")) {
                     val kind = taskStage.removePrefix("WAIT_")
+                    if (kind == "current weather" && listOf("Current weather unavailable", "Offline;",
+                            "Fresh GPS", "GPS accuracy", "Approve sharing").any {
+                            SensorState.get(kind).startsWith(it)
+                        }) {
+                        output.text = SensorState.get(kind)
+                        taskStage = ""
+                        return
+                    }
                     FeatureState.get(kind)?.let { feature ->
                         taskStage = ""
                         val answerText = if (kind == "ocr interpretation")
@@ -1522,7 +1547,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                             saveKind = ""
                             saveResult.visibility = View.GONE
                         }
-                        if (kind in setOf("transport", "culture", "discovery", "destination")) {
+                        if (kind in setOf("transport", "culture", "discovery", "destination", "current weather")) {
                             val source = feature.optString("source_url")
                                 .ifBlank { feature.optString("official_depot_enquiry") }
                                 .ifBlank { when (kind) {
@@ -1595,7 +1620,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             "CAPTURE_TEXT" -> "READ TEXT"
             "CAPTURE_BUS_BOARD", "SHOW_BUS_MAP" -> "BUS OPTIONS"
             "OPEN_TALK" -> "TRANSLATION"
-            "OPEN_WEATHER" -> "WEATHER CHECK"
+            "OPEN_WEATHER" -> if (weatherIsCurrent) "CURRENT WEATHER" else "PLANNED WEATHER CHECK"
             "OPEN_BOOKING" -> "SAVED PLACE"
             "OPEN_CULTURE" -> "PLACE INFORMATION"
             "OPEN_DISCOVERY" -> "LOCAL DISCOVERY"
@@ -1966,6 +1991,15 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         "hi" -> "Hindi"
         "en" -> "English"
         else -> code
+    }
+
+    private fun isCurrentWeatherRequest(spoken: String): Boolean {
+        val lower = spoken.lowercase(Locale.ROOT)
+        if (Regex("\\b(current|now|right now|at the moment|temperature|raining now)\\b")
+                .containsMatchIn(lower)) return true
+        if (Regex("\\b(boat|ferry|ride|trip|sail|tomorrow|later|tonight)\\b")
+                .containsMatchIn(lower) || weatherStartFromSpeech(spoken) != null) return false
+        return true
     }
 
     private fun weatherStartFromSpeech(spoken: String): Int? {

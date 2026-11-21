@@ -49,6 +49,9 @@ object CloudGateway {
             json.optString("official_warning_issue_date").takeIf { it.isNotBlank() })
     }
 
+    fun currentWeather(lat: Double, lon: Double): JSONObject =
+        postJson("/v1/weather/current", JSONObject().put("lat", lat).put("lon", lon))
+
     fun interpretOcr(text: String, imageSha256: String, sourceLanguage: String,
                      targetLanguage: String): JSONObject =
         postJson("/v1/ocr/interpret", JSONObject()

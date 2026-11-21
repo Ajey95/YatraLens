@@ -29,3 +29,9 @@ def test_bus_map_request_uses_map_without_camera():
     suggestion = SuggestedIntent(feature="F06", destination="Cherthala", follow_up_question="")
     plan = finalize_plan("Show the bus route map from Alappuzha to Cherthala", None, suggestion)
     assert plan["action"] == "SHOW_BUS_MAP"
+
+
+def test_current_weather_request_cannot_be_misrouted_to_scene():
+    suggestion = SuggestedIntent(feature="F01", destination="", follow_up_question="")
+    plan = finalize_plan("What is the current weather here?", None, suggestion)
+    assert plan["action"] == "OPEN_WEATHER"

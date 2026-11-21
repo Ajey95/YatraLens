@@ -1,6 +1,9 @@
 package com.yatralens
 
 import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /** Short, source-aware summaries for the selected feature checks. */
 object FeaturePresenter {
@@ -11,6 +14,21 @@ object FeaturePresenter {
             "Observed bus board; indicative road corridor" else
             result.optString("source_url", result.optString("official_depot_enquiry"))
         val body = when (kind) {
+            "current weather" -> if (status != "CURRENT")
+                "Current conditions unavailable: ${reason.ifBlank { "No fresh conditions were returned." }}"
+            else buildString {
+                append("Right now: ${result.optString("condition", "Conditions unavailable")}")
+                if (!result.isNull("temperature_c"))
+                    append(", ${result.optDouble("temperature_c")}°C")
+                append(".\n")
+                if (!result.isNull("precipitation_mm"))
+                    append("Recent precipitation: ${result.optDouble("precipitation_mm")} mm. ")
+                if (!result.isNull("wind_kmh"))
+                    append("Wind: ${result.optDouble("wind_kmh")} km/h. ")
+                if (!result.isNull("humidity_percent"))
+                    append("Humidity: ${result.optDouble("humidity_percent")}%.")
+                append("\nModel time: ${istTime(result.optString("observed_at"))}.")
+            }
             "typed translation", "scene translation", "transport question", "assistant response" -> buildString {
                 append("Translation ready for review.")
                 val flags = result.optJSONArray("review_flags")
@@ -71,4 +89,10 @@ object FeaturePresenter {
             else if (source.isNotBlank()) append("\nSource: $source")
         }.trim()
     }
+
+    private fun istTime(value: String): String = try {
+        DateTimeFormatter.ofPattern("d MMM, h:mm a 'IST'")
+            .withZone(ZoneId.of("Asia/Kolkata"))
+            .format(Instant.parse(value))
+    } catch (_: Exception) { value }
 }

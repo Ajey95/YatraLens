@@ -29,7 +29,9 @@ def finalize_plan(request: str, follow_up_answer: str | None, suggestion: Sugges
     request_lower = request.casefold()
     # Board reading is part of transport when the user names a bus. The model
     # can otherwise mistake the word "read" for generic OCR (F03).
-    if any(marker in request_lower for marker in ("bus", "ബസ്", "బస్స", "बस")):
+    if any(marker in request_lower for marker in ("weather", "temperature", "raining now", "മഴ", "వాతావరణ", "मौसम")):
+        feature = "F05"
+    elif any(marker in request_lower for marker in ("bus", "ബസ്", "బస్స", "बस")):
         feature = "F06"
     destination = suggestion.destination.strip()
     answer = (follow_up_answer or "").strip()

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from backend.app.policy import Claim, evaluate_claims, translation_review_flags
 from backend.app.geo_policy import assess_saved_destination
 from backend.app.weather_policy import assess_forecast
+from backend.app.weather_current import summarize_current
 from backend.app.curated import cultural_lookup, discover
 from backend.app.transport_policy import assess_route
 from backend.app.bus_headsigns import approximate_place_pin, place_map_answer, read_board_place
@@ -152,6 +153,11 @@ class WeatherAssessmentRequest(BaseModel):
     event_start: datetime
     event_end: datetime
     activity_label: str = Field(min_length=1, max_length=100)
+
+
+class CurrentWeatherRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
 
 
 class GeoCheckRequest(BaseModel):
@@ -381,6 +387,7 @@ async def weather_forecast(lat: float, lon: float, _: None = Depends(require_aut
     params = {
         "latitude": lat, "longitude": lon,
         "hourly": "precipitation_probability,rain,wind_speed_10m,wind_gusts_10m,temperature_2m",
+        "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_gusts_10m",
         "forecast_days": 2, "timezone": "UTC",
     }
     try:
@@ -393,7 +400,16 @@ async def weather_forecast(lat: float, lon: float, _: None = Depends(require_aut
     return {"provider": "Open-Meteo", "kind": "forecast_not_official_warning",
             "retrieved_at": now_utc(), "source_url": str(response.url),
             "latitude": forecast.get("latitude"), "longitude": forecast.get("longitude"),
-            "hourly_units": forecast.get("hourly_units"), "hourly": forecast.get("hourly", {})}
+            "hourly_units": forecast.get("hourly_units"), "hourly": forecast.get("hourly", {}),
+            "current_units": forecast.get("current_units"), "current": forecast.get("current", {})}
+
+
+@app.post("/v1/weather/current")
+async def weather_current(payload: CurrentWeatherRequest, _: None = Depends(require_auth),
+                          __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    forecast = await weather_forecast(payload.lat, payload.lon, None, None)
+    return summarize_current(forecast["current"], forecast["source_url"],
+                             datetime.fromisoformat(forecast["retrieved_at"]))
 
 
 async def read_public_imd_warning() -> dict[str, Any]:
