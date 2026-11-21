@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 640" role="img" aria-labelledby="title desc">
+  <title id="title">Screenshot placeholder</title>
+  <desc id="desc">A phone-shaped placeholder for a future real YatraLens screenshot.</desc>
+  <rect width="360" height="640" rx="36" fill="#eaf1e9"/>
+  <rect x="42" y="28" width="276" height="584" rx="32" fill="#163e3b"/>
+  <rect x="53" y="48" width="254" height="544" rx="23" fill="#f6f6ec"/>
+  <rect x="145" y="37" width="70" height="8" rx="4" fill="#d7e3d7"/>
+  <circle cx="180" cy="269" r="55" fill="#dcebe0"/>
+  <path d="M152 288l18-19 15 13 22-27 20 33z" fill="#7eae96"/>
+  <circle cx="159" cy="250" r="8" fill="#7eae96"/>
+  <text x="180" y="366" text-anchor="middle" fill="#1c5149" font-family="Arial, sans-serif" font-size="20" font-weight="700">SCREENSHOT</text>
+  <text x="180" y="392" text-anchor="middle" fill="#49776c" font-family="Arial, sans-serif" font-size="15">COMING SOON</text>
+</svg>
