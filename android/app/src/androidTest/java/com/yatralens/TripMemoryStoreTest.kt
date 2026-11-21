@@ -182,5 +182,23 @@ class TripMemoryStoreTest {
         assertEquals(true, store.delete(id))
         store.close()
     }
+
+    @Test fun proposedDetailDefaultsToTranscriptObservationTime() {
+        val store = TripMemoryStore(context)
+        val tripId = UUID.randomUUID().toString()
+        val captured = Instant.parse("2026-11-21T10:00:00Z")
+        store.startTrip(tripId, "TEST_FIXTURE")
+        val evidenceId = store.saveTranscript(tripId, "Fare is ₹1200", "en-IN", 1800,
+            observedAt = captured, owner = "LOCAL")
+        val claim = store.claimFromEvidence(tripId, evidenceId, "boat-test", "price", "₹1200", "1200")
+        store.readableDatabase.rawQuery("SELECT observed_at FROM claim WHERE id=?",
+            arrayOf(claim.claimId)).use {
+            assertEquals(true, it.moveToFirst())
+            assertEquals(captured.toString(), it.getString(0))
+        }
+        assertEquals(evidenceId, store.recentEvidenceItems(tripId).single().id)
+        store.endTrip(tripId)
+        store.close()
+    }
 }
 

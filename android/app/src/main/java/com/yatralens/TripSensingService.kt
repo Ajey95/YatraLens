@@ -71,6 +71,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         const val SEND_TURN = "com.yatralens.SEND_TURN"
         const val SAVE_TRANSCRIPT = "com.yatralens.SAVE_TRANSCRIPT"
         const val SPEAK_TRANSLATION = "com.yatralens.SPEAK_TRANSLATION"
+        const val SPEAK_REVIEWED_TEXT = "com.yatralens.SPEAK_REVIEWED_TEXT"
+        const val TRANSLATE_TYPED = "com.yatralens.TRANSLATE_TYPED"
         const val CHECK_WEATHER = "com.yatralens.CHECK_WEATHER"
         const val INTERPRET_OCR = "com.yatralens.INTERPRET_OCR"
         const val PROPOSE_AGREEMENT = "com.yatralens.PROPOSE_AGREEMENT"
@@ -207,6 +209,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             SEND_TURN -> sendTurn(intent.getBooleanExtra("cloudApproved", false))
             SAVE_TRANSCRIPT -> saveTranscript(intent.getBooleanExtra("userApproved", false))
             SPEAK_TRANSLATION -> speakTranslation(intent)
+            SPEAK_REVIEWED_TEXT -> speakReviewedText(intent)
+            TRANSLATE_TYPED -> translateTyped(intent)
             CHECK_WEATHER -> checkWeather(intent)
             INTERPRET_OCR -> interpretOcr(intent)
             PROPOSE_AGREEMENT -> proposeAgreement(intent)
@@ -245,6 +249,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         WeatherState.set(null)
         SceneState.set(null)
         FeatureState.clear()
+        ReviewedEvidenceState.set(null, null)
         postedAlertKeys.clear()
         locationLastMs = 0L
         cameraAllowedForTrip = mode == "CONTINUOUS"
@@ -461,9 +466,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         pendingOcrCapture = false
+        val selectedTripId = tripId
         SensorState.set("text scan", "Capturing center text crop")
         SensorState.setOcrText("")
         lastOcr = null
+        FeatureState.set("ocr interpretation", null)
         withCaptureLight("text scan", capture) { capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
@@ -485,7 +492,9 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     SensorState.set("text scan", "Sending selected crop to Sarvam Document AI")
                     Thread({
                         try {
+                            if (!activeTrip || tripId != selectedTripId) return@Thread
                             val result = CloudGateway.ocrSelectedCrop(cropBytes)
+                            if (!activeTrip || tripId != selectedTripId) return@Thread
                             if (result.status == "COMPLETED" && result.text.isNotBlank()) lastOcr = result
                             SensorState.setOcrText(result.text)
                             SensorState.set("text scan", if (result.text.isBlank())
@@ -517,7 +526,9 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             SensorState.set("scene scan", "Camera unavailable; start a camera trip or let the phone cool")
             return
         }
+        val selectedTripId = tripId
         SceneState.set(null)
+        FeatureState.set("scene translation", null)
         SensorState.set("scene scan", "Analyzing selected scene on this phone")
         withCaptureLight("scene scan", capture) { capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
@@ -531,7 +542,9 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                     jpeg.fill(0)
                     Thread({
                         try {
+                            if (!activeTrip || tripId != selectedTripId) return@Thread
                             val result = MirageNative.describe(this@TripSensingService, bitmap)
+                            if (!activeTrip || tripId != selectedTripId) return@Thread
                             SceneState.set(result)
                             SensorState.set("scene scan", if (result.optString("status").endsWith("FAILED"))
                                 "Scene model unavailable: ${result.optString("status")}" else
@@ -684,6 +697,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             turnStartedMs = SystemClock.elapsedRealtime()
         }
         lastTranscript = null
+        FeatureState.set("agreement", null)
+        ReviewedEvidenceState.set(null, null)
         ConversationState.set(ConversationTurn(turnId, turnOwner, "", "",
             turnSourceLanguage, turnTargetLanguage, "RECORDING"))
         SensorState.set("spoken turn", "recording selected turn; maximum 10 seconds")
@@ -757,6 +772,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         try {
             val evidenceId = memory.saveTranscript(id, transcript.text, transcript.language,
                 lastTranscriptDurationMs, owner = turnOwner)
+            ReviewedEvidenceState.set(ConversationState.current?.id, evidenceId)
             SensorState.set("spoken turn", "Saved reviewed transcript as evidence $evidenceId")
             store.record("TRANSCRIPT_SAVED", "evidence_id=$evidenceId")
             lastTranscript = null
@@ -775,27 +791,63 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             SensorState.set("speech playback", "A reviewed current turn and cloud approval are required")
             return
         }
+        synthesizeAndPlay(approvedText, turn.targetLanguage, turn.id)
+    }
+
+    private fun speakReviewedText(intent: Intent) {
+        val approvedText = intent.getStringExtra("approvedText")?.trim().orEmpty()
+        val language = intent.getStringExtra("language")?.trim().orEmpty()
+        if (!activeTrip || !intent.getBooleanExtra("cloudApproved", false) ||
+            approvedText.isBlank() || approvedText.length > 2500 ||
+            language !in SUPPORTED_TURN_LANGUAGES || player != null || speechPreparing) {
+            SensorState.set("speech playback", "Review text and approve cloud speech first")
+            return
+        }
+        synthesizeAndPlay(approvedText, language, null)
+    }
+
+    private fun translateTyped(intent: Intent) {
+        val input = intent.getStringExtra("text")?.trim().orEmpty()
+        val source = intent.getStringExtra("sourceLanguage")?.trim().orEmpty()
+        val target = intent.getStringExtra("targetLanguage")?.trim().orEmpty()
+        val kind = if (intent.getStringExtra("kind") == "scene translation") "scene translation"
+            else "typed translation"
+        if (input.isBlank() || input.length > 2000 || source !in SUPPORTED_TURN_LANGUAGES ||
+            target !in SUPPORTED_TURN_LANGUAGES) {
+            SensorState.set(kind, "Enter text and choose supported languages")
+            return
+        }
+        runCloudFeature(kind, intent.getBooleanExtra("cloudApproved", false)) {
+            val translated = CloudGateway.translateText(input, source, target)
+            JSONObject().put("status", "READY_FOR_REVIEW")
+                .put("original_text", input).put("translated_text", translated.text)
+                .put("source_language", source).put("target_language", target)
+                .put("review_flags", JSONArray(translated.reviewFlags))
+        }
+    }
+
+    private fun synthesizeAndPlay(approvedText: String, language: String, turnId: Long?) {
         val shouldResume = micWanted && micRunning
         speechPreparing = true
         resumeMicAfterPlayback = shouldResume
         micWanted = false
         stopMic("MUTED_FOR_PLAYBACK")
         SensorState.set("speech playback", "Generating Sarvam voice for reviewed text")
-        store.record("SPEECH_APPROVED", "owner=${turn.owner};language=${turn.targetLanguage}")
+        store.record("SPEECH_APPROVED", "language=$language")
         Thread({
             try {
-                val audio = CloudGateway.synthesizeSpeech(approvedText, turn.targetLanguage)
+                val audio = CloudGateway.synthesizeSpeech(approvedText, language)
                 val file = File.createTempFile("yatralens-speech-", ".wav", cacheDir)
                 try { file.writeBytes(audio) } finally { audio.fill(0) }
                 main.post {
                     if (!activeTrip) { file.delete(); return@post }
                     speechPreparing = false
-                    if (ConversationState.current?.id != turn.id) {
+                    if (turnId != null && ConversationState.current?.id != turnId) {
                         file.delete()
                         restoreMicAfterPlayback()
                         return@post
                     }
-                    playAudio(file, turn.targetLanguage)
+                    playAudio(file, language)
                 }
             } catch (e: Exception) {
                 main.post {
@@ -861,6 +913,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun checkWeather(intent: Intent) {
+        WeatherState.set(null)
         if (!intent.getBooleanExtra("locationCloudApproved", false)) {
             SensorState.set("weather", "Approve sharing current location for this forecast")
             return
@@ -889,7 +942,6 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val end = start.plusSeconds(durationMinutes * 60L)
         val selectedTripId = tripId
         SensorState.set("weather", "Checking forecast overlap for $activity")
-        WeatherState.set(null)
         Thread({
             try {
                 val result = CloudGateway.assessWeather(location.lat, location.lon, start, end, activity)
@@ -909,6 +961,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun runCloudFeature(kind: String, approved: Boolean, work: () -> JSONObject) {
+        FeatureState.set(kind, null)
         if (!approved) { SensorState.set(kind, "Approve this cloud request first"); return }
         if (!activeTrip) { SensorState.set(kind, "Start a trip first"); return }
         if (PhysicalContextEngine.situation.value.device.networkAvailable != true) {
@@ -916,7 +969,6 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         val selectedTripId = tripId
-        FeatureState.set(kind, null)
         SensorState.set(kind, "Checking")
         Thread({
             try {
@@ -944,6 +996,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun interpretOcr(intent: Intent) {
+        FeatureState.set("ocr interpretation", null)
         val ocr = lastOcr
         if (ocr?.imageSha256.isNullOrBlank() || ocr?.text.isNullOrBlank()) {
             SensorState.set("ocr interpretation", "Capture readable text first")
@@ -956,17 +1009,19 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun proposeAgreement(intent: Intent) {
+        FeatureState.set("agreement", null)
         val turn = ConversationState.current
         if (turn == null || turn.original.isBlank()) {
             SensorState.set("agreement", "Transcribe a spoken turn first")
             return
         }
         runCloudFeature("agreement", intent.getBooleanExtra("cloudApproved", false)) {
-            CloudGateway.proposeAgreement(turn.original, turn.owner)
+            CloudGateway.proposeAgreement(turn.original, turn.owner).put("turn_id", turn.id)
         }
     }
 
     private fun lookupCulture(intent: Intent) {
+        FeatureState.set("culture", null)
         val location = freshAccurateLocation("culture") ?: return
         val hint = intent.getStringExtra("nameHint")?.trim().orEmpty()
         if (hint.isBlank()) { SensorState.set("culture", "Enter a place name or sign text"); return }
@@ -976,6 +1031,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun discoverLocal(intent: Intent) {
+        FeatureState.set("discovery", null)
         val location = freshAccurateLocation("discovery") ?: return
         val interest = intent.getStringExtra("interest")?.trim().orEmpty()
         if (interest.isBlank()) { SensorState.set("discovery", "Enter a craft or interest"); return }
@@ -985,6 +1041,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun checkTransport(intent: Intent) {
+        FeatureState.set("transport", null)
         val board = intent.getStringExtra("boardText")?.trim().orEmpty()
         val destination = intent.getStringExtra("destination")?.trim().orEmpty()
         val routeJson = intent.getStringExtra("routeRecords") ?: "[]"
@@ -998,6 +1055,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun checkDestination(intent: Intent) {
+        FeatureState.set("destination", null)
         val location = freshAccurateLocation("destination") ?: return
         val saved = tripId?.let { memory.latestDestination(it) }
         if (saved == null) {
@@ -1172,6 +1230,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         val conflicts = try { memory.openConflicts(id) } catch (_: Exception) { emptyList() }
         val alerts = ContextDecisionEngine.evaluate(PhysicalContextEngine.situation.value, conflicts)
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        val activeKeys = alerts.mapTo(mutableSetOf()) { it.key }
+        for (key in postedAlertKeys.filter { it !in activeKeys }) {
+            manager.cancel(2000 + (key.hashCode() and 0x7fffffff) % 100000)
+            postedAlertKeys.remove(key)
+        }
         for (alert in alerts) {
             if (!postedAlertKeys.add(alert.key)) continue
             val notificationId = 2000 + (alert.key.hashCode() and 0x7fffffff) % 100000
@@ -1196,6 +1259,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         WeatherState.set(null)
         SceneState.set(null)
         FeatureState.clear()
+        ReviewedEvidenceState.set(null, null)
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         for (key in postedAlertKeys) manager.cancel(2000 + (key.hashCode() and 0x7fffffff) % 100000)
         postedAlertKeys.clear()

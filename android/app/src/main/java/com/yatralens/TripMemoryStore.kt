@@ -297,7 +297,7 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     /** Attach a reviewed fact to the exact saved transcript/OCR evidence, without duplicating its source. */
     fun claimFromEvidence(tripId: String, evidenceId: String, subjectKey: String,
                           predicate: String, rawValue: String, normalizedValue: String,
-                          observedAt: Instant = Instant.now(), validFrom: Instant? = null,
+                          observedAt: Instant? = null, validFrom: Instant? = null,
                           validUntil: Instant? = null): IngestedClaim {
         require(subjectKey.isNotBlank() && predicate.isNotBlank() && normalizedValue.isNotBlank())
         require(validFrom == null || validUntil == null || validUntil > validFrom)
@@ -307,11 +307,11 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
         var result: IngestedClaim? = null
         db.beginTransaction()
         try {
-            val source = db.rawQuery("""SELECT s.id, e.excerpt FROM evidence e
+            val source = db.rawQuery("""SELECT s.id, e.excerpt, s.observed_at FROM evidence e
                 JOIN source s ON s.id=e.source_id WHERE e.id=? AND s.trip_id=?""",
                 arrayOf(evidenceId, tripId)).use { cursor ->
                 require(cursor.moveToFirst()) { "Evidence must belong to the trip" }
-                cursor.getString(0) to cursor.getString(1)
+                Triple(cursor.getString(0), cursor.getString(1), cursor.getString(2))
             }
             require(source.second?.isNotBlank() == true) { "Reviewed text evidence is required" }
             db.insertOrThrow("claim", null, ContentValues().apply {
@@ -319,7 +319,7 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
                 put("predicate", predicate); put("raw_value", rawValue)
                 put("normalized_value", normalizedValue); put("raw_quote", source.second)
                 put("source_id", source.first); put("evidence_id", evidenceId)
-                put("observed_at", observedAt.toString())
+                put("observed_at", (observedAt ?: Instant.parse(source.third)).toString())
                 put("valid_from", validFrom?.toString()); put("valid_until", validUntil?.toString())
                 put("verification_state", "PROPOSED"); put("created_at", now)
             })
@@ -423,6 +423,20 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     fun interruptedTripId(mode: String): String? = readableDatabase.rawQuery(
         "SELECT id FROM trip WHERE status='ACTIVE' AND mode=? ORDER BY started_at DESC LIMIT 1", arrayOf(mode)
     ).use { if (it.moveToFirst()) it.getString(0) else null }
+
+    data class EvidenceEntry(val id: String, val observedAt: String, val title: String,
+                             val provider: String, val excerpt: String)
+
+    fun recentEvidenceItems(tripId: String): List<EvidenceEntry> = readableDatabase.rawQuery(
+        """SELECT e.id, s.observed_at, s.title, s.provider, e.excerpt FROM evidence e
+           JOIN source s ON s.id=e.source_id WHERE s.trip_id=?
+           ORDER BY s.observed_at DESC LIMIT 20""", arrayOf(tripId)
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) add(EvidenceEntry(cursor.getString(0), cursor.getString(1),
+                cursor.getString(2), cursor.getString(3), cursor.getString(4) ?: ""))
+        }
+    }
 
     /** Read-only evidence access works without network or a running trip service. */
     fun recentEvidence(tripId: String): List<String> = readableDatabase.rawQuery(
