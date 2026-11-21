@@ -14,7 +14,10 @@ API = "https://en.wikipedia.org/w/api.php"
 def _title_match(name: str, title: str) -> bool:
     normalize = lambda value: re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
     left, right = normalize(name), normalize(title)
-    return bool(left and right and SequenceMatcher(None, left, right).ratio() >= 0.72)
+    specific = set(left.split()) - {"temple", "shrine", "church", "mosque", "history", "kerala"}
+    return bool(left and right and specific and
+                (SequenceMatcher(None, left, right).ratio() >= 0.65 or
+                 specific.issubset(set(right.split()))))
 
 
 async def cultural_page(name: str) -> dict | None:
@@ -37,6 +40,7 @@ async def cultural_page(name: str) -> dict | None:
     image = (page.get("thumbnail") or {}).get("source", "")
     if not summary and not image:
         return None
-    return {"summary": summary, "source_url": page.get("fullurl", ""),
+    return {"title": page.get("title", name), "summary": summary,
+            "source_url": page.get("fullurl", ""),
             "source_owner": "Wikipedia", "image_url": image,
             "image_source_url": page.get("fullurl", "") if image else ""}

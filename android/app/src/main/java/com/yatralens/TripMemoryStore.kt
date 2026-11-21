@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.time.Instant
+import java.time.Duration
 import java.util.UUID
 
 /** Local source registry. A generated sentence is never an evidence source. */
@@ -87,6 +88,73 @@ class TripMemoryStore(context: Context) : SQLiteOpenHelper(context, "trip_memory
     fun endTrip(id: String, at: Instant = Instant.now()) {
         val values = ContentValues().apply { put("ended_at", at.toString()); put("status", "ENDED") }
         writableDatabase.update("trip", values, "id=?", arrayOf(id))
+    }
+
+    /** Reuse a recent trip for selected context even when its sensor session has ended. */
+    private fun contextTripId(activeTripId: String?): String {
+        if (activeTripId != null) return activeTripId
+        val recent = readableDatabase.rawQuery(
+            "SELECT id, started_at FROM trip WHERE mode<>'TEST_FIXTURE' ORDER BY started_at DESC LIMIT 1",
+            null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) to cursor.getString(1) else null
+        }
+        if (recent != null && runCatching {
+                Duration.between(Instant.parse(recent.second), Instant.now()).toHours() in 0..12
+            }.getOrDefault(false)) return recent.first
+        val id = UUID.randomUUID().toString()
+        startTrip(id, "CONTEXT_ONLY")
+        endTrip(id)
+        return id
+    }
+
+    fun saveReportedContext(activeTripId: String?, title: String, detail: String): Boolean {
+        require(title.isNotBlank() && detail.isNotBlank())
+        val id = contextTripId(activeTripId)
+        val duplicate = readableDatabase.rawQuery(
+            "SELECT observed_at FROM context_note WHERE trip_id=? AND title=? AND detail=? " +
+                "ORDER BY observed_at DESC LIMIT 1", arrayOf(id, title, detail)).use { cursor ->
+            cursor.moveToFirst() && runCatching {
+                Duration.between(Instant.parse(cursor.getString(0)), Instant.now()).toMinutes() < 10
+            }.getOrDefault(false)
+        }
+        if (duplicate) return false
+        saveContextNote(id, title, detail, "Traveller reported in assistant")
+        return true
+    }
+
+    /** A selected typed reply is local evidence, not a verified recording or agreed fact. */
+    fun saveTypedLocalStatement(activeTripId: String?, text: String, language: String): String? {
+        require(text.isNotBlank())
+        val id = contextTripId(activeTripId)
+        val duplicate = readableDatabase.rawQuery(
+            """SELECT e.id FROM evidence e JOIN source s ON s.id=e.source_id
+               WHERE s.trip_id=? AND s.kind='typed_local_statement' AND e.excerpt=?
+               ORDER BY s.observed_at DESC LIMIT 1""", arrayOf(id, text.trim())).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+        if (duplicate != null) return null
+        val sourceId = UUID.randomUUID().toString()
+        val evidenceId = UUID.randomUUID().toString()
+        val now = Instant.now().toString()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.insertOrThrow("source", null, ContentValues().apply {
+                put("id", sourceId); put("trip_id", id); put("kind", "typed_local_statement")
+                put("provider", "Traveller-entered local reply")
+                put("title", "Local person's typed reply (unverified)")
+                put("excerpt", text.trim()); put("observed_at", now); put("language", language)
+                put("permission_scope", "USER_SELECTED_TYPED_TURN")
+                put("retention_policy", "USER_MANAGED"); put("created_at", now)
+            })
+            db.insertOrThrow("evidence", null, ContentValues().apply {
+                put("id", evidenceId); put("source_id", sourceId)
+                put("media_kind", "typed_text"); put("excerpt", text.trim())
+                put("created_at", now)
+            })
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return evidenceId
     }
 
     data class SavedDestination(val eventId: String, val sourceId: String, val placeName: String,

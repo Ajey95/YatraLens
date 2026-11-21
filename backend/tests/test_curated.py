@@ -80,6 +80,38 @@ def test_culture_adds_separate_web_summary_and_image_source(monkeypatch):
     assert result["image_url"].startswith("https://upload.wikimedia.org/")
 
 
+def test_named_culture_works_without_gps_and_generic_query_explains_missing_context(monkeypatch):
+    monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
+    from backend.app import main
+
+    async def fake_places(query, lat, lon, **_kwargs):
+        assert query == "Ambalappuzha temple"
+        assert lat is None and lon is None
+        return [{"place_id": "temple", "name": "Ambalappuzha Sree Krishna Swamy Temple",
+                 "area": "Alappuzha", "latitude": 9.39, "longitude": 76.37,
+                 "source_url": "https://maps.google.com/example", "source_owner": "Google Maps Places"}]
+
+    async def fake_page(_name):
+        return {"title": "Ambalappuzha Sree Krishna Swamy Temple", "summary": "Sourced history.",
+                "source_url": "https://en.wikipedia.org/wiki/Example", "image_url": "",
+                "image_source_url": ""}
+
+    monkeypatch.setattr(main, "search_places", fake_places)
+    monkeypatch.setattr(main, "cultural_page", fake_page)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer test-token",
+               "X-YatraLens-Cloud-Consent": "approved-current-trip"}
+    named = client.post("/v1/culture/lookup", headers=headers,
+                        json={"name_hint": "Tell me about Ambalappuzha temple"}).json()
+    assert named["status"] == "CANDIDATE_REQUIRES_CONFIRMATION"
+    assert named["web_summary"] == "Sourced history."
+    assert named["map_pin"]["latitude"] == 9.39
+    generic = client.post("/v1/culture/lookup", headers=headers,
+                          json={"name_hint": "this temple"}).json()
+    assert generic["status"] == "UNKNOWN"
+    assert "place name or a fresh location" in generic["reason"]
+
+
 def test_landmark_near_indicative_bus_corridor_needs_conductor_confirmation(monkeypatch):
     monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
     from backend.app import main

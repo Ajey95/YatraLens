@@ -179,8 +179,8 @@ class GeoCheckRequest(BaseModel):
 
 
 class PlaceLookupRequest(BaseModel):
-    lat: float = Field(ge=-90, le=90)
-    lon: float = Field(ge=-180, le=180)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
     name_hint: str = Field(min_length=1, max_length=120)
 
 
@@ -394,21 +394,54 @@ async def transport_map(payload: TransportMapRequest, _: None = Depends(require_
 @app.post("/v1/culture/lookup")
 async def culture_lookup(payload: PlaceLookupRequest, _: None = Depends(require_auth),
                          __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
-    curated = cultural_lookup(payload.lat, payload.lon, payload.name_hint)
+    if (payload.lat is None) != (payload.lon is None):
+        raise HTTPException(status_code=422, detail="Latitude and longitude must be supplied together")
+    query = re.sub(r"^(?:please\s+)?(?:tell me about|tell me the history of|what is the history of|"
+                   r"what do you know about|history of|describe|show me)\s+", "",
+                   payload.name_hint.strip(), flags=re.IGNORECASE).strip(" ?.")
+    query = query or payload.name_hint.strip()
+    generic = bool(re.fullmatch(
+        r"(?:this|that|nearby|pointed|the)?\s*(?:temple|shrine|church|mosque|landmark)"
+        r"(?:\s+(?:near me|in front of me))?", query, flags=re.IGNORECASE))
+    has_location = payload.lat is not None and payload.lon is not None
+    if generic and not has_location:
+        return {"status": "UNKNOWN", "reason":
+                "I need a place name or a fresh location to find a nearby cultural site."}
+    curated = (cultural_lookup(payload.lat, payload.lon, query) if has_location else
+               {"status": "UNKNOWN", "reason": "No local curated match without a location"})
     if curated["status"] != "UNKNOWN":
         result = curated
     else:
         try:
-            places = await search_places(payload.name_hint, payload.lat, payload.lon, count=1)
+            places = await search_places("temple near me" if generic else query,
+                                         payload.lat, payload.lon, count=5 if generic else 3,
+                                         radius_m=5_000 if generic else 15_000)
         except (httpx.HTTPError, ValueError):
             places = []
         if not places:
-            return curated
-        place = places[0]
+            page = None
+            if not generic:
+                try:
+                    page = await cultural_page(query)
+                except (httpx.HTTPError, requests.RequestException, ValueError):
+                    pass
+            if page is None:
+                return {"status": "UNKNOWN", "reason":
+                        "No sourced cultural page or mapped place matched this name. Try the sign's full name."}
+            return {"status": "CANDIDATE_REQUIRES_CONFIRMATION", "name": page["title"],
+                    "facts": [], "source_url": page["source_url"], "source_owner": "Wikipedia",
+                    "identity_basis": "user-provided name and web page; physical site unverified",
+                    "visitor_rules": None, "opening_status": "UNKNOWN", "web_summary": page["summary"],
+                    "web_source_url": page["source_url"], "image_url": page["image_url"],
+                    "image_source_url": page["image_source_url"],
+                    "reason": "Confirm this is the site you mean before relying on its history."}
+        place = min(places, key=lambda item: item["distance_km"] if item.get("distance_km") is not None
+                    else float("inf")) if generic else places[0]
         result = {"status": "CANDIDATE_REQUIRES_CONFIRMATION", "place_id": place["place_id"],
                   "name": place["name"], "area": place["area"], "facts": [],
                   "source_url": place["source_url"], "source_owner": place["source_owner"],
-                  "identity_basis": "user name hint and nearby Google Maps place",
+                  "identity_basis": "nearby Google Maps candidate; visual identity unverified" if generic else
+                                    "user name hint and Google Maps place",
                   "map_pin": {"label": place["name"], "latitude": place["latitude"],
                               "longitude": place["longitude"], "precision": "Google Maps place pin"},
                   "visitor_rules": None, "opening_status": "UNKNOWN",

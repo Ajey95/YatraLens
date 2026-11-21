@@ -17,14 +17,15 @@ def distance_km(lat: float, lon: float, other_lat: float, other_lon: float) -> f
     return 12_742 * asin(min(1.0, sqrt(h)))
 
 
-async def search_places(query: str, lat: float, lon: float, *, count: int = 5,
+async def search_places(query: str, lat: float | None, lon: float | None, *, count: int = 5,
                         radius_m: int = 15_000) -> list[dict]:
     key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
     if not key:
         return []
-    body = {"textQuery": query[:160], "pageSize": min(max(count, 1), 10),
-            "locationBias": {"circle": {"center": {"latitude": lat, "longitude": lon},
-                                        "radius": float(radius_m)}}}
+    body = {"textQuery": query[:160], "pageSize": min(max(count, 1), 10)}
+    if lat is not None and lon is not None:
+        body["locationBias"] = {"circle": {"center": {"latitude": lat, "longitude": lon},
+                                             "radius": float(radius_m)}}
     async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(PLACES_URL, json=body, headers={
             "X-Goog-Api-Key": key, "X-Goog-FieldMask": FIELD_MASK})
@@ -36,8 +37,8 @@ async def search_places(query: str, lat: float, lon: float, *, count: int = 5,
         place_lat, place_lon = location.get("latitude"), location.get("longitude")
         if not isinstance(place_lat, (float, int)) or not isinstance(place_lon, (float, int)):
             continue
-        distance = distance_km(lat, lon, place_lat, place_lon)
-        if distance > radius_m / 1000 + 2:
+        distance = distance_km(lat, lon, place_lat, place_lon) if lat is not None and lon is not None else None
+        if distance is not None and distance > radius_m / 1000 + 2:
             continue
         name = (item.get("displayName") or {}).get("text", "").strip()
         if not name:
@@ -45,7 +46,7 @@ async def search_places(query: str, lat: float, lon: float, *, count: int = 5,
         result.append({"place_id": item.get("id", ""), "name": name,
                        "area": item.get("formattedAddress", ""),
                        "latitude": place_lat, "longitude": place_lon,
-                       "distance_km": round(distance, 1),
+                       "distance_km": round(distance, 1) if distance is not None else None,
                        "primary_type": item.get("primaryType"),
                        "source_url": item.get("googleMapsUri", ""),
                        "source_owner": "Google Maps Places"})

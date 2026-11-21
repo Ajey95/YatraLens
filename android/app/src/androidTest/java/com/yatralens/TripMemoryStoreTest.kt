@@ -15,6 +15,28 @@ import java.util.UUID
 class TripMemoryStoreTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
+    @Test fun reportedAreaAndSelectedLocalReplyAppearAsSourcedTripContext() {
+        val store = TripMemoryStore(context)
+        val tripId = UUID.randomUUID().toString()
+        try {
+            store.startTrip(tripId, "CONVERSATION")
+            assertEquals(true, store.saveReportedContext(tripId,
+                "Traveller-reported area", "Alappuzha bus station"))
+            assertEquals(false, store.saveReportedContext(tripId,
+                "Traveller-reported area", "Alappuzha bus station"))
+            assertNotNull(store.saveTypedLocalStatement(tripId,
+                "ടിക്കറ്റ് നിരക്ക് ₹1200. മടക്കം 16:00-ന്.", "ml-IN"))
+            val entries = store.recentTripContext(80).filter { it.tripId == tripId }
+            assertEquals(true, entries.any { it.title == "Traveller-reported area" &&
+                it.source == "Traveller reported in assistant" })
+            assertEquals(true, entries.any { it.title.contains("typed reply") &&
+                it.detail.contains("₹1200") && it.source == "Traveller-entered local reply" })
+        } finally {
+            store.writableDatabase.delete("trip", "id=?", arrayOf(tripId))
+            store.close()
+        }
+    }
+
     @Test fun timelineCombinesSavedContextAcrossTripsAndExcludesFixtures() {
         val store = TripMemoryStore(context)
         val first = UUID.randomUUID().toString()

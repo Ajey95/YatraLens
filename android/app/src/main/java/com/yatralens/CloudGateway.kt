@@ -64,9 +64,11 @@ object CloudGateway {
         postJson("/v1/memory/propose-agreement", JSONObject()
             .put("transcript", transcript.take(2000)).put("turn_owner", owner))
 
-    fun cultureLookup(lat: Double, lon: Double, hint: String): JSONObject =
-        postJson("/v1/culture/lookup", JSONObject()
-            .put("lat", lat).put("lon", lon).put("name_hint", hint))
+    fun cultureLookup(lat: Double?, lon: Double?, hint: String): JSONObject {
+        val body = JSONObject().put("name_hint", hint)
+        if (lat != null && lon != null) body.put("lat", lat).put("lon", lon)
+        return postJson("/v1/culture/lookup", body)
+    }
 
     fun discoverLocal(lat: Double, lon: Double, interest: String): JSONObject =
         postJson("/v1/discovery/search", JSONObject()

@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -66,6 +67,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         const val RESUME = "com.yatralens.RESUME"
         const val CAPTURE_TEXT = "com.yatralens.CAPTURE_TEXT"
         const val CAPTURE_SCENE = "com.yatralens.CAPTURE_SCENE"
+        const val ANALYZE_LIVE_SCENE = "com.yatralens.ANALYZE_LIVE_SCENE"
         const val SAVE_OCR = "com.yatralens.SAVE_OCR"
         const val START_TURN = "com.yatralens.START_TURN"
         const val SEND_TURN = "com.yatralens.SEND_TURN"
@@ -98,6 +100,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private lateinit var audioManager: AudioManager
     private val main = Handler(Looper.getMainLooper())
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val liveSceneExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null
     private var boundCamera: Camera? = null
     private var imageCapture: ImageCapture? = null
@@ -110,6 +113,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var cameraWanted = false
     private var cameraAllowedForTrip = false
     private var micAllowedForTrip = false
+    private var foregroundTypes = 0
     private var micWanted = false
     @Volatile private var activeTrip = false
     @Volatile private var tripId: String? = null
@@ -117,6 +121,9 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var micLastPacketMs = 0L
     private var locationLastMs = 0L
     private var lastCameraSampleMs = 0L
+    private var lastLiveSceneMs = 0L
+    @Volatile private var liveSceneBusy = false
+    @Volatile private var liveSceneRequested = false
     private var lastMicEventMs = 0L
     private var lastMotionEventMs = 0L
     private var lastHeadingEventMs = 0L
@@ -204,6 +211,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             START -> startTrip(when (intent.getStringExtra("mode")) {
                 "CONVERSATION" -> "CONVERSATION"
                 "LOCATION_ONLY" -> "LOCATION_ONLY"
+                "CAMERA_ONLY" -> "CAMERA_ONLY"
                 else -> "CONTINUOUS"
             })
             PAUSE_CAMERA -> { cameraWanted = false; stopCamera("PAUSED_BY_USER") }
@@ -219,6 +227,12 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             CAPTURE_TEXT -> captureText(intent.getBooleanExtra("cloudApproved", false),
                 intent.getStringExtra("language") ?: "ml-IN")
             CAPTURE_SCENE -> captureScene()
+            ANALYZE_LIVE_SCENE -> {
+                if (activeTrip && cameraWanted) {
+                    liveSceneRequested = true
+                    SensorState.set("scene scan", "Waiting for the next live camera frame")
+                } else SensorState.set("scene scan", "Live camera is off; enable it for this trip")
+            }
             SAVE_OCR -> saveOcr(intent.getBooleanExtra("userApproved", false))
             START_TURN -> startTurn(intent)
             SEND_TURN -> sendTurn(intent.getBooleanExtra("cloudApproved", false))
@@ -246,11 +260,44 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private fun has(permission: String): Boolean = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     private fun startTrip(mode: String) {
-        if (activeTrip) return
+        if (activeTrip) {
+            if (mode == "CAMERA_ONLY" && micWanted) {
+                micWanted = false
+                micAllowedForTrip = false
+                stopMic("off")
+            }
+            if (mode == "CONVERSATION" && !micAllowedForTrip &&
+                has(Manifest.permission.RECORD_AUDIO)) {
+                try {
+                    val expanded = foregroundTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    startForeground(NOTIFICATION_ID, notification(), expanded)
+                    foregroundTypes = expanded
+                    micAllowedForTrip = true
+                    micWanted = true
+                    startMic()
+                } catch (e: Exception) {
+                    SensorState.set("microphone", "Could not enable conversation mic: ${e.javaClass.simpleName}")
+                }
+            }
+            if (mode in setOf("CONTINUOUS", "CAMERA_ONLY") && !cameraAllowedForTrip &&
+                has(Manifest.permission.CAMERA)) {
+                try {
+                    val expanded = foregroundTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                    startForeground(NOTIFICATION_ID, notification(), expanded)
+                    foregroundTypes = expanded
+                    cameraAllowedForTrip = true
+                    cameraWanted = true
+                    startCamera()
+                } catch (e: Exception) {
+                    SensorState.set("camera", "Could not enable live camera: ${e.javaClass.simpleName}")
+                }
+            }
+            return
+        }
         var types = 0
-        if (mode == "CONTINUOUS" && has(Manifest.permission.CAMERA))
+        if (mode in setOf("CONTINUOUS", "CAMERA_ONLY") && has(Manifest.permission.CAMERA))
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-        if (mode != "LOCATION_ONLY" && has(Manifest.permission.RECORD_AUDIO))
+        if (mode in setOf("CONTINUOUS", "CONVERSATION") && has(Manifest.permission.RECORD_AUDIO))
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         if (has(Manifest.permission.ACCESS_FINE_LOCATION) || has(Manifest.permission.ACCESS_COARSE_LOCATION))
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
@@ -264,6 +311,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
             return
         }
         activeTrip = true
+        foregroundTypes = types
         YatraVoiceService.active?.pauseForTrip()
         WeatherState.set(null)
         SceneState.set(null)
@@ -274,8 +322,8 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         postedAlertKeys.clear()
         lastSevereThermalMs = 0L
         locationLastMs = 0L
-        cameraAllowedForTrip = mode == "CONTINUOUS"
-        micAllowedForTrip = mode != "LOCATION_ONLY"
+        cameraAllowedForTrip = mode in setOf("CONTINUOUS", "CAMERA_ONLY")
+        micAllowedForTrip = mode in setOf("CONTINUOUS", "CONVERSATION")
         val previousTripId = memory.interruptedTripId(mode)
         tripId = previousTripId ?: UUID.randomUUID().toString()
         PhysicalContextEngine.accept(ContextEvent.TripStarted(tripId!!, Instant.now()))
@@ -285,7 +333,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         micWanted = micAllowedForTrip && has(Manifest.permission.RECORD_AUDIO)
         SensorState.set("trip", "${if (previousTripId == null) "active" else "resumed after interruption"} since ${Instant.now()}")
         SensorState.set("camera", if (cameraWanted) "initializing" else "off in conversation mode")
-        SensorState.set("microphone", if (micAllowedForTrip) "initializing" else "off in location mode")
+        SensorState.set("microphone", if (micAllowedForTrip) "initializing" else "off in camera/location mode")
         PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.CAMERA,
             if (cameraWanted) CaptureState.INITIALIZING else CaptureState.DISABLED))
         PhysicalContextEngine.accept(ContextEvent.Health(SensorKind.MICROPHONE,
@@ -369,6 +417,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 provider.unbindAll()
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
                 analysis.setAnalyzer(cameraExecutor) { image ->
                     try {
@@ -387,6 +436,40 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                             SensorState.set("camera frames accepted", frameCount)
                             store.record("CAMERA_FRAME_ACCEPTED", "${image.width}x${image.height}")
                             main.post { updateNotification() }
+                        }
+                        if (activeTrip && cameraWanted && !liveSceneBusy && !captureBusy &&
+                            power.currentThermalStatus < PowerManager.THERMAL_STATUS_SEVERE &&
+                            (liveSceneRequested || now - lastLiveSceneMs >= 30_000)) {
+                            val requested = liveSceneRequested
+                            liveSceneRequested = false
+                            liveSceneBusy = true
+                            lastLiveSceneMs = now
+                            val frame = try { liveFrameBitmap(image) } catch (e: Exception) {
+                                SensorState.set("scene scan", "Live frame conversion failed: ${e.javaClass.simpleName}")
+                                null
+                            }
+                            if (frame == null) {
+                                liveSceneBusy = false
+                                SensorState.set("scene scan", "Live frame conversion failed")
+                            } else liveSceneExecutor.execute {
+                                try {
+                                    if (activeTrip && cameraWanted) {
+                                        if (requested) saveVisualPreview(frame, "Live camera frame")
+                                        val result = MirageNative.describe(this@TripSensingService, frame)
+                                        if (activeTrip && cameraWanted) {
+                                            SceneState.set(result)
+                                            SensorState.set("scene scan", "Live scene updated ${Instant.now()}")
+                                            store.record("LIVE_SCENE_ANALYZED",
+                                                "status=${result.optString("status", "OK")}")
+                                        }
+                                    }
+                                } catch (e: Throwable) {
+                                    SensorState.set("scene scan", "Live scene unavailable: ${e.javaClass.simpleName}")
+                                } finally {
+                                    frame.recycle()
+                                    liveSceneBusy = false
+                                }
+                            }
                         }
                     } finally { image.close() }
                 }
@@ -415,8 +498,11 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         for (y in 0 until image.height step maxOf(1, image.height / 12)) {
             for (x in 0 until image.width step maxOf(1, image.width / 12)) {
                 val index = y * plane.rowStride + x * plane.pixelStride
-                if (index in 0 until buffer.limit()) {
-                    total += buffer.get(index).toInt() and 0xff
+                if (index + 2 < buffer.limit()) {
+                    val red = buffer.get(index).toInt() and 0xff
+                    val green = buffer.get(index + 1).toInt() and 0xff
+                    val blue = buffer.get(index + 2).toInt() and 0xff
+                    total += ((red * 77 + green * 150 + blue * 29) shr 8).toLong()
                     count++
                 }
             }
@@ -424,7 +510,34 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         return if (count == 0) null else (total / count).toInt()
     }
 
+    private fun liveFrameBitmap(image: ImageProxy): Bitmap? {
+        val plane = image.planes.firstOrNull() ?: return null
+        val buffer = plane.buffer
+        val width = minOf(384, image.width)
+        val height = maxOf(1, (image.height.toDouble() * width / image.width).toInt())
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) for (x in 0 until width) {
+            val sourceX = x * image.width / width
+            val sourceY = y * image.height / height
+            val offset = sourceY * plane.rowStride + sourceX * plane.pixelStride
+            if (offset + 2 >= buffer.limit()) return null
+            val red = buffer.get(offset).toInt() and 0xff
+            val green = buffer.get(offset + 1).toInt() and 0xff
+            val blue = buffer.get(offset + 2).toInt() and 0xff
+            pixels[y * width + x] = android.graphics.Color.rgb(red, green, blue)
+        }
+        val bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+        pixels.fill(0)
+        val rotation = image.imageInfo.rotationDegrees
+        if (rotation == 0) return bitmap
+        val rotated = Bitmap.createBitmap(bitmap, 0, 0, width, height,
+            Matrix().apply { postRotate(rotation.toFloat()) }, true)
+        bitmap.recycle()
+        return rotated
+    }
+
     private fun stopCamera(reason: String) {
+        liveSceneRequested = false
         finishCaptureLight()
         if (pendingOcrCapture) {
             pendingOcrCapture = false
@@ -1166,11 +1279,13 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
 
     private fun lookupCulture(intent: Intent) {
         FeatureState.set("culture", null)
-        val location = freshAccurateLocation("culture") ?: return
+        val location = PhysicalContextEngine.situation.value.location?.takeIf {
+            PhysicalContextEngine.fresh(SensorKind.LOCATION, 120_000) && it.accuracyM <= 100f
+        }
         val hint = intent.getStringExtra("nameHint")?.trim().orEmpty()
         if (hint.isBlank()) { SensorState.set("culture", "Enter a place name or sign text"); return }
         runCloudFeature("culture", intent.getBooleanExtra("locationCloudApproved", false)) {
-            CloudGateway.cultureLookup(location.lat, location.lon, hint)
+            CloudGateway.cultureLookup(location?.lat, location?.lon, hint)
         }
     }
 
@@ -1440,6 +1555,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     override fun onDestroy() {
         if (activeTrip) endTrip()
         cameraExecutor.shutdown()
+        liveSceneExecutor.shutdown()
         super.onDestroy()
     }
 
