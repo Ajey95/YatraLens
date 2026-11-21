@@ -20,4 +20,14 @@ class TripContextExtractorTest {
         assertTrue(TripContextExtractor.materialLocalReply("ലൈഫ് ജാക്കറ്റ് നൽകും."))
         assertFalse(TripContextExtractor.materialLocalReply("നമസ്കാരം."))
     }
+
+    @Test fun remembersTengglishTripReports() {
+        val area = TripContextExtractor.reportedFacts(
+            "Nenu Alappuzha bus stand daggara unna. Ee bus ekkadiki velthundi?")
+        assertEquals("Traveller-reported area", area.single().title)
+        assertEquals("Alappuzha bus stand", area.single().detail)
+        val destination = TripContextExtractor.reportedFacts("Nenu Marari Beach ki vellali")
+        assertEquals("Traveller-reported destination", destination.single().title)
+        assertEquals("Marari Beach", destination.single().detail)
+    }
 }

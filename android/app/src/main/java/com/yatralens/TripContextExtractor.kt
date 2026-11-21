@@ -15,6 +15,13 @@ object TripContextExtractor {
         RegexOption.IGNORE_CASE)
     private val boundary = Regex("\\b(?:and|read|tell|show|check|can|because|then)\\b",
         RegexOption.IGNORE_CASE)
+    private val tengglishArea = Regex(
+        "\\b(?:nenu|memu|manam)\\s+(.{3,100}?)\\s+(?:daggara|deggara|lo)\\s+(?:unna|unnam|unnanu)\\b",
+        RegexOption.IGNORE_CASE)
+    private val tengglishDestination = Regex(
+        "\\b(?:nenu|memu|manam)\\s+(.{3,100}?)\\s+ki\\s+" +
+            "(?:veltunna|velthunna|velta|veltham|vellali|velali)\\b",
+        RegexOption.IGNORE_CASE)
 
     fun reportedFacts(request: String): List<Report> = buildList {
         for ((pattern, title) in listOf(location to "Traveller-reported area",
@@ -23,6 +30,12 @@ object TripContextExtractor {
                 ?.split(boundary, limit = 2)?.firstOrNull()?.trim().orEmpty()
             if (value.length in 3..100 && !value.equals("here", true) &&
                 !value.equals("there", true) && !value.equals("this", true))
+                add(Report(title, value))
+        }
+        for ((pattern, title) in listOf(tengglishArea to "Traveller-reported area",
+                tengglishDestination to "Traveller-reported destination")) {
+            val value = pattern.find(request)?.groupValues?.get(1)?.trim().orEmpty()
+            if (value.length in 3..100 && value !in listOf("ikkada", "akkada"))
                 add(Report(title, value))
         }
     }
