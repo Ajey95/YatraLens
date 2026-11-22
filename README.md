@@ -109,14 +109,19 @@ Mirage's cues are **observations, not proof** of an exact boarding gate, bus rou
 
 ## Screenshots and demo video
 
-> Replace these placeholders with **real captures** from the Android build. Label synthetic inputs and fixtures in the demo.
+These are real captures from the Android phone. The conversation screen uses a **synthetic typed Malayalam local reply**; it is not a recording of a local person.
 
-| Home and trip | Sign scan | Conversation | Memory and conflicts |
+| Home and trip | Sign scan | Two-sided conversation | Trip memory |
 | :---: | :---: | :---: | :---: |
-| ![Home screenshot placeholder](docs/assets/screenshot-placeholder.svg) | ![Sign scan screenshot placeholder](docs/assets/screenshot-placeholder.svg) | ![Conversation screenshot placeholder](docs/assets/screenshot-placeholder.svg) | ![Memory screenshot placeholder](docs/assets/screenshot-placeholder.svg) |
-| `docs/screenshots/home.png` | `docs/screenshots/sign-scan.png` | `docs/screenshots/conversation.png` | `docs/screenshots/memory-conflict.png` |
+| ![Home screen](docs/screenshots/home.png) | ![Malayalam sign scan](docs/screenshots/sign-scan.png) | ![Two-sided conversation](docs/screenshots/conversation.png) | ![Trip memory](docs/screenshots/memory.png) |
+| [Home](docs/screenshots/home.png) | [Sign scan](docs/screenshots/sign-scan.png) | [Conversation](docs/screenshots/conversation.png) | [Memory](docs/screenshots/memory.png) |
 
-**Demo video:** _Coming soon._ Add a link to a real, captioned walkthrough of a bus-board scan, local conversation and source-backed trip decision.
+| Camera temple | Current weather | Bus options | Saved booking |
+| :---: | :---: | :---: | :---: |
+| ![Camera temple result](docs/screenshots/camera-temple.png) | ![Current weather](docs/screenshots/weather.png) | ![Bus options](docs/screenshots/bus-options.png) | ![Saved booking](docs/screenshots/booking.png) |
+| [Camera result](docs/screenshots/camera-temple.png) | [Weather](docs/screenshots/weather.png) | [Bus options](docs/screenshots/bus-options.png) | [Booking](docs/screenshots/booking.png) |
+
+**[Prototype demo video](docs/demo/YatraLens-prototype-demo.mp4)** (3–4 minutes): recorded phone flows with chapter cards covering F01–F13. The cards explicitly identify paths that have not passed a full live check. The local-person Malayalam turn is synthetic typed input; the app translates and speaks both sides.
 
 ## Tech stack
 

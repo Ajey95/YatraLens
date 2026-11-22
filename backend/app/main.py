@@ -667,7 +667,8 @@ async def translate(payload: TranslationRequest, _: None = Depends(require_auth)
                 if len(re.findall(r"[\u0d00-\u0d7f]", translated)) < max(4, len(translated) // 4):
                     format_flags.append("MALAYALAM_SCRIPT_REVIEW_BEFORE_SPEAKING")
         if reverse_tengglish and len(re.findall(
-                r"\b(if|there|is|the|will|be|to|at|for|same|people|travel|confirm|return|ticket|rate)\b",
+                r"\b(if|there|is|the|will|be|to|at|for|same|people|travel|confirm|returns?|"
+                r"ticket|rate|charge|rupees?|four|o.clock)\b",
                 translated, re.IGNORECASE)) >= 2:
             try:
                 async with httpx.AsyncClient(timeout=30) as client:

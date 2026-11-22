@@ -136,6 +136,28 @@ def test_tengglish_turn_uses_reviewed_sarvam_translation_fallback(monkeypatch):
     assert "TENGGLISH_TRANSLATION_REVIEW_BEFORE_SPEAKING" in response.json()["review_flags"]
 
 
+def test_malayalam_reply_rewrites_english_heavy_result_as_tengglish(monkeypatch):
+    monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
+    monkeypatch.setenv("SARVAM_API_KEY", "fixture-key")
+
+    async def provider_reply(self, url, *args, **kwargs):
+        payload = ({"choices": [{"message": {"content":
+                   '{"translation":"Charge 1200 rupees. Returns at 4 o’clock."}'}}]}
+                   if url.endswith("chat/completions") else
+                   {"translated_text": "1200 rupaayalu charge. Naalugu gantalaku thirigi vastaam."})
+        return httpx.Response(200, request=httpx.Request("POST", url), json=payload)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", provider_reply)
+    response = TestClient(app).post("/v1/text/translate", json={
+        "text": "ചാർജ് 1200 രൂപ. തിരിച്ചു വരുന്നത് 4 മണിക്ക്.",
+        "source_language_code": "ml-IN", "target_language_code": "te-IN",
+        "output_script": "roman",
+    }, headers={"Authorization": "Bearer test-token",
+                "X-YatraLens-Cloud-Consent": "approved-current-trip"})
+    assert response.status_code == 200
+    assert response.json()["translated_text"].startswith("1200 rupaayalu")
+
+
 def test_bus_board_reads_known_place_without_inventing_route(monkeypatch):
     monkeypatch.setenv("YATRALENS_DEV_TOKEN", "test-token")
     client = TestClient(app)
