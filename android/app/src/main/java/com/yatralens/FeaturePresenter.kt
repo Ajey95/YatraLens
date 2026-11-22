@@ -14,6 +14,29 @@ object FeaturePresenter {
             "Observed bus board; indicative road corridor" else
             result.optString("source_url", result.optString("official_depot_enquiry"))
         val body = when (kind) {
+            "weather" -> buildString {
+                when (result.optString("decision")) {
+                    "ACTION_RECOMMENDED" -> append("Weather may affect this activity. Confirm the boat service with the operator.")
+                    "NO_ALERT" -> append("No forecast threshold crossed for this activity window. Confirm the boat service before boarding.")
+                    else -> append("Forecast coverage is incomplete. Check with the operator before travelling.")
+                }
+                val rain = result.optDouble("max_precipitation_probability_percent", Double.NaN)
+                val gust = result.optDouble("max_wind_gust_kmh", Double.NaN)
+                if (!rain.isNaN() || !gust.isNaN()) {
+                    append("\nForecast peak: ")
+                    if (!rain.isNaN()) append("rain chance ${rain.toInt()}%")
+                    if (!rain.isNaN() && !gust.isNaN()) append(" · ")
+                    if (!gust.isNaN()) append("wind gust ${gust.toInt()} km/h")
+                    append(".")
+                }
+                append("\nIMD Kerala warning: ")
+                append(when (result.optString("official_warning_status")) {
+                    "available" -> if (result.isNull("official_warning")) "checked; none relevant to this date" else "relevant advisory found"
+                    "unavailable" -> "could not be verified now"
+                    else -> "outside the local pilot area"
+                })
+                append(".")
+            }
             "current weather" -> if (status != "CURRENT")
                 "Current conditions unavailable: ${reason.ifBlank { "No fresh conditions were returned." }}"
             else buildString {
@@ -94,7 +117,7 @@ object FeaturePresenter {
                 if (result.optString("web_source_url").isNotBlank())
                     append("\nHistory and photo: ${result.optString("web_source_url")}")
             }
-            else if (source.isNotBlank()) append("\nSource: $source")
+            else if (source.isNotBlank() && kind !in setOf("weather", "current weather")) append("\nSource: $source")
         }.trim()
     }
 

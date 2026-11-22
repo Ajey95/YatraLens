@@ -174,6 +174,37 @@ object CloudGateway {
         } finally { connection.disconnect() }
     }
 
+    /** Sends one user-approved phone frame to the backend's primary visual model. */
+    fun analyzeSelectedFrame(jpeg: ByteArray, task: String, question: String): JSONObject {
+        require(BuildConfig.DEBUG && BuildConfig.DEV_TOKEN.isNotBlank())
+        require(task in setOf("scene", "culture", "text", "bus_board"))
+        require(jpeg.size in 3..8_000_000 && jpeg[0] == 0xff.toByte() &&
+            jpeg[1] == 0xd8.toByte() && jpeg[2] == 0xff.toByte())
+        val boundary = "YatraLensVision${System.currentTimeMillis()}"
+        val connection = URL("http://127.0.0.1:8000/v1/vision/analyze").openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 50000
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer ${BuildConfig.DEV_TOKEN}")
+            connection.setRequestProperty("X-YatraLens-Cloud-Consent", "approved-current-trip")
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.outputStream.use { output ->
+                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"task\"\r\n\r\n$task\r\n".toByteArray())
+                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"question\"\r\n\r\n${question.take(500)}\r\n".toByteArray())
+                output.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"selected-frame.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".toByteArray())
+                output.write(jpeg)
+                output.write("\r\n--$boundary--\r\n".toByteArray())
+            }
+            val status = connection.responseCode
+            val content = (if (status in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            if (status !in 200..299) error("Backend returned HTTP $status")
+            return JSONObject(content)
+        } finally { connection.disconnect() }
+    }
+
     fun transcribePcm16(pcm: ByteArray): Transcript {
         require(BuildConfig.DEBUG && BuildConfig.DEV_TOKEN.isNotBlank()) { "Debug backend token unavailable" }
         require(pcm.isNotEmpty() && pcm.size <= 960_000) { "Turn must be 0–30 seconds" }

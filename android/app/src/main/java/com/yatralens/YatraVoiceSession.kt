@@ -104,11 +104,13 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private lateinit var reviewed: EditText
     private lateinit var editWording: Button
     private lateinit var speakResult: Button
+    private lateinit var stopSpeech: Button
     private lateinit var saveResult: Button
     private lateinit var stopTrip: Button
     private lateinit var language: Spinner
     private var planAction = ""
     private var destination = ""
+    private var lastVisionDescription = ""
     private var sessionVisible = false
     private var taskStage = ""
     private var stageStartedMs = 0L
@@ -122,6 +124,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private var sensorControlsAdded = false
     private var voiceFlow = true
     private var planInFlight = false
+    private var planSerial = 0L
+    private var planningUtterance = ""
     private var autoConversation = false
     private var typedConversationMode = false
     private var nextConversationOwner = "LOCAL"
@@ -135,6 +139,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private var bookingLocationConfirmed = false
     private var weatherIsCurrent = false
     private var speechSerial = 0L
+    private var reviewedSpeechSerial = 0L
     private var listenEpoch = 0L
     private var recognitionFailures = 0
     private var usePhoneSpeechLocale = false
@@ -272,7 +277,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             listen()
         }
         cloud = CheckBox(host).apply {
-            text = "Use Sarvam for selected text, translation and speech"
+            text = "Use cloud AI for selected text, translation and speech"
             setTextColor(host.getColor(R.color.yl_sand))
             setOnCheckedChangeListener { _, checked ->
                 if (checked && sessionVisible && request.text.isNotBlank() && planAction.isBlank() && !planInFlight)
@@ -294,7 +299,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             taskStage = ""
             main.removeCallbacks(pollTask)
             stopTrip.visibility = View.GONE
-            output.text = "Trip sensors stopping."
+            if (output.text.isNullOrBlank()) output.text = "Trip sensors stopping."
             speakBrief("Trip sensors aagayi. Inka em help kavali?")
         }
         stopTrip.visibility = View.GONE
@@ -479,6 +484,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             speakReviewed()
         }
         speakResult.visibility = View.GONE
+        stopSpeech = button(card, "Stop speaking") { stopReviewedSpeech() }
+        stopSpeech.visibility = View.GONE
         saveResult = button(detailsPanel, "Save reviewed text to trip memory") { saveCurrentEvidence() }
         saveResult.visibility = View.GONE
         button(card, "Close") { finish() }
@@ -492,6 +499,9 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             it.name.startsWith("yatralens-assistant-") && it.extension == "wav"
         }?.forEach { it.delete() }
         sessionVisible = true
+        planSerial++
+        planInFlight = false
+        planningUtterance = ""
         refreshContextPreview()
         // A new wake must not silently re-run the previous camera task.
         request.setText("")
@@ -533,6 +543,9 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
+                        if (utteranceId == "assistant-answer") main.post {
+                            if (::stopSpeech.isInitialized) stopSpeech.visibility = View.GONE
+                        }
                         if (utteranceId == "assistant-turn") {
                             main.post {
                                 val owner = announcedTurnOwner
@@ -550,6 +563,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                     override fun onError(utteranceId: String?) {
                         main.post {
                             if (!sessionVisible) return@post
+                            if (utteranceId == "assistant-answer" && ::stopSpeech.isInitialized)
+                                stopSpeech.visibility = View.GONE
                             if (utteranceId == "assistant-turn") {
                                 val owner = announcedTurnOwner
                                 announcedTurnOwner = null
@@ -568,6 +583,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         Log.i("YatraVoiceSession", "Bubble hidden; stage=$taskStage; conversation=$autoConversation")
         super.onHide()
         sessionVisible = false
+        planSerial++
+        planInFlight = false
         speechSerial++
         listenEpoch++
         taskStage = ""
@@ -772,7 +789,12 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private fun plan() {
         val spoken = request.text.toString().trim()
         if (spoken.isBlank()) { prompt.text = "Say or type a request first."; return }
-        if (planInFlight) return
+        if (planInFlight && spoken == planningUtterance) return
+        val requestId = ++planSerial
+        planningUtterance = spoken
+        planInFlight = false
+        taskStage = ""
+        main.removeCallbacks(pollTask)
         val lower = spoken.lowercase()
         val directSensorAction = when {
             "stop sensors" in lower || "end trip" in lower -> TripSensingService.END
@@ -836,8 +858,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             try {
                 val result = CloudGateway.planAssistant(spoken, followUp, selectedLanguage)
                 main.post {
+                    if (requestId != planSerial || !sessionVisible) return@post
                     planInFlight = false
-                    if (!sessionVisible) return@post
                     if (result.optString("status") == "NEEDS_FOLLOW_UP") {
                         val question = result.optString("follow_up_question")
                         awaitingPlannerAnswer = true
@@ -848,7 +870,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         awaitingPlannerAnswer = false
                         answer.visibility = View.GONE
                         planAction = result.optString("action")
-                        destination = result.optString("destination")
+                        destination = if (result.isNull("destination")) ""
+                            else result.optString("destination").takeUnless { it == "null" }.orEmpty()
                         prompt.text = when (planAction) {
                             "CAPTURE_BUS_BOARD" -> "I can read the pointed bus board for your destination."
                             "CAPTURE_SCENE" -> "I can inspect the pointed scene."
@@ -876,8 +899,9 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 }
             } catch (e: Exception) {
                 main.post {
+                    if (requestId != planSerial || !sessionVisible) return@post
                     planInFlight = false
-                    if (sessionVisible) prompt.text = "Planning unavailable. Please try speaking again."
+                    prompt.text = "Planning unavailable. Please try speaking again."
                 }
             }
         }
@@ -919,6 +943,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         RegexOption.IGNORE_CASE).containsMatchIn(request.text.toString())
 
     private fun prepareTask() {
+        lastVisionDescription = ""
         val cameraTask = planAction in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD") ||
             (planAction == "OPEN_CULTURE" && cultureNeedsCamera())
         if (sessionStartedTrip && !cameraTask) send(TripSensingService.PAUSE_CAMERA)
@@ -977,18 +1002,19 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         val checkingSavedBooking = planAction == "OPEN_BOOKING" &&
             !request.text.toString().contains(Regex("\\b(save|remember|set)\\b", RegexOption.IGNORE_CASE)) &&
             TripMemoryStore(host).use { it.latestDestinationAcrossTrips() } != null
-        shareConsent.visibility = if (planAction in setOf("CAPTURE_TEXT", "CAPTURE_BUS_BOARD",
+        shareConsent.visibility = if (planAction in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD",
                 "OPEN_WEATHER", "OPEN_DISCOVERY") ||
                 (planAction == "OPEN_CULTURE" && cultureNeedsCamera()) ||
                 (planAction == "OPEN_TALK" && !typedConversationMode) ||
                 checkingSavedBooking)
             View.VISIBLE else View.GONE
         shareConsent.text = when (planAction) {
-            "CAPTURE_TEXT" -> "Send one selected crop to Sarvam"
-            "CAPTURE_BUS_BOARD" -> "Send one selected camera crop to Sarvam"
+            "CAPTURE_SCENE" -> "Send one selected scene frame to OpenAI vision"
+            "CAPTURE_TEXT" -> "Send one selected crop to OpenAI vision; Sarvam OCR if needed"
+            "CAPTURE_BUS_BOARD" -> "Send one selected bus crop to OpenAI vision; Sarvam OCR if needed"
             "OPEN_TALK" -> "Translate and speak selected turns; save relevant local trip statements"
             "OPEN_WEATHER" -> "Send this current GPS fix for the weather check"
-            "OPEN_CULTURE" -> "Use a current GPS fix to find the pointed place, if available"
+            "OPEN_CULTURE" -> "Send one selected frame to OpenAI vision and use a current GPS fix"
             else -> "Send this current GPS fix for the selected check"
         }
         output.text = ""
@@ -997,6 +1023,8 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         resultTitle.visibility = View.GONE
         resultDetails.visibility = View.GONE
         resultSource.visibility = View.GONE
+        imageHolder.visibility = View.GONE
+        mapHolder.visibility = View.GONE
         reviewed.visibility = View.GONE
         speakResult.visibility = View.GONE
         speechConsent.visibility = View.GONE
@@ -1031,7 +1059,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             prompt.text = "Grant the needed camera, microphone or location permission once from the YatraLens home setup."
             return
         }
-        if (planAction in setOf("CAPTURE_TEXT", "CAPTURE_BUS_BOARD", "OPEN_TALK", "OPEN_WEATHER",
+        if (planAction in setOf("CAPTURE_SCENE", "CAPTURE_TEXT", "CAPTURE_BUS_BOARD", "OPEN_TALK", "OPEN_WEATHER",
                 "OPEN_CULTURE", "OPEN_DISCOVERY") && !shareConsent.isChecked) {
             prompt.text = "Approve this selected image or GPS sharing first."
             return
@@ -1065,8 +1093,9 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         when (planAction) {
             "CAPTURE_SCENE" -> {
                 SceneState.set(null)
+                VisualEvidenceState.clear()
                 send(TripSensingService.ANALYZE_LIVE_SCENE)
-                output.text = "Reading the live camera scene on this phone…"
+                output.text = "Checking the selected live camera frame…"
                 setStage("WAIT_SCENE")
             }
             "CAPTURE_TEXT", "CAPTURE_BUS_BOARD" -> {
@@ -1113,9 +1142,10 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             "OPEN_CULTURE" -> {
                 if (cultureNeedsCamera()) {
                     SceneState.set(null)
+                    VisualEvidenceState.clear()
                     send(TripSensingService.ANALYZE_LIVE_SCENE)
                     output.text = "Checking the live camera view for this place…"
-                    setStage("WAIT_CULTURE_SCENE")
+                    setStage("WAIT_CULTURE_VISION_FRAME")
                 } else {
                     lookupNamedCulture()
                 }
@@ -1169,8 +1199,13 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             output.text = "Saved point: ${saved?.placeName}. Approve sharing one GPS fix to check it."
             return
         }
+        if (placeName.text.toString().trim().equals("null", ignoreCase = true))
+            placeName.setText("")
         if (placeName.text.isBlank() && destination.isNotBlank())
             placeName.setText(destination)
+        if (placeName.text.isBlank() && request.text.toString().contains(
+                Regex("\\bboarding point\\b", RegexOption.IGNORE_CASE)))
+            placeName.setText("Boarding point")
         if (placeName.text.isBlank() && voiceFlow) {
             awaitingBookingName = true
             prompt.text = "What should I call this booking point?"
@@ -1566,28 +1601,122 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         executeTask()
                     }
                 }
-                "WAIT_SCENE" -> SceneState.current?.let { scene ->
+                "WAIT_SCENE" -> VisualEvidenceState.copy()?.let { frame ->
+                    taskStage = "WAIT_SCENE_VISION"
+                    val requestId = planSerial
+                    worker.execute {
+                        val visual = try { CloudGateway.analyzeSelectedFrame(frame,
+                            "scene", request.text.toString()) } catch (_: Exception) { null }
+                        finally { frame.fill(0) }
+                        main.post {
+                            if (!sessionVisible || requestId != planSerial) return@post
+                            val answer = visual?.optString("answer").orEmpty()
+                            if (answer.isNotBlank()) {
+                                taskStage = ""
+                                showAnswer(answer, "en-IN")
+                                resultSource.text = "Selected frame · OpenAI vision; verify before acting"
+                                resultSource.visibility = View.VISIBLE
+                                showSelectedImage()
+                            } else setStage("WAIT_SCENE_LOCAL")
+                        }
+                    }
+                } ?: run {
+                    if (SystemClock.elapsedRealtime() - stageStartedMs > 15_000 &&
+                        SceneState.current != null) setStage("WAIT_SCENE_LOCAL")
+                }
+                "WAIT_SCENE_LOCAL" -> SceneState.current?.let { scene ->
                     taskStage = ""
-                    val answerText = SceneAnswerEngine.answer(scene, SceneState.capturedAt,
-                        request.text.toString()).text
-                    showAnswer(answerText, "en-IN")
+                    showAnswer(SceneAnswerEngine.answer(scene, SceneState.capturedAt,
+                        request.text.toString()).text, "en-IN")
                     showSelectedImage()
                 }
-                "WAIT_CULTURE_SCENE" -> SceneState.current?.let { scene ->
-                    FeatureState.set("culture", null)
-                    val signText = scene.optJSONArray("text")?.let { texts ->
-                        (0 until texts.length()).mapNotNull { index ->
-                            val item = texts.optJSONObject(index) ?: return@mapNotNull null
-                            item.optString("text", item.optString("value")).trim()
-                                .takeIf { it.length in 6..100 && Regex(
-                                    "temple|shrine|church|mosque|ക്ഷേത്ര|പള്ളി", RegexOption.IGNORE_CASE)
-                                    .containsMatchIn(it) }
-                        }.firstOrNull()
+                "WAIT_CULTURE_VISION_FRAME" -> VisualEvidenceState.copy()?.let { frame ->
+                    taskStage = "WAIT_CULTURE_VISION"
+                    val requestId = planSerial
+                    worker.execute {
+                        val visual = try { CloudGateway.analyzeSelectedFrame(frame,
+                            "culture", request.text.toString()) } catch (_: Exception) { null }
+                        finally { frame.fill(0) }
+                        main.post {
+                            if (!sessionVisible || requestId != planSerial) return@post
+                            lastVisionDescription = visual?.optString("visual_description").orEmpty()
+                            val name = visual?.optString("landmark_name").orEmpty()
+                            if (name.isNotBlank()) {
+                                FeatureState.set("culture", null)
+                                send(TripSensingService.LOOKUP_CULTURE,
+                                    "locationCloudApproved" to true, "nameHint" to name)
+                                output.text = "Camera read a landmark name. Checking sourced history…"
+                                setStage("WAIT_culture")
+                            } else if (visual != null) {
+                                taskStage = ""
+                                val description = visual.optString("visual_description")
+                                val answer = visual.optString("answer")
+                                showAnswer("Camera view: $description\n$answer\n" +
+                                    "I cannot verify this site's exact name from this image. " +
+                                    "Point at its entrance sign or tell me the name for sourced history.",
+                                    "en-IN")
+                                resultSource.text = "Selected frame · OpenAI vision; site identity unverified"
+                                resultSource.visibility = View.VISIBLE
+                                showSelectedImage()
+                            } else setStage("WAIT_CULTURE_SCENE")
+                        }
                     }
-                    send(TripSensingService.LOOKUP_CULTURE, "locationCloudApproved" to true,
-                        "nameHint" to (signText ?: taskInput.text.toString().trim()))
-                    output.text = "Live scene ready. Searching mapped places and cultural sources…"
-                    setStage("WAIT_culture")
+                } ?: run {
+                    if (SystemClock.elapsedRealtime() - stageStartedMs > 15_000 &&
+                        SceneState.current != null) setStage("WAIT_CULTURE_SCENE")
+                }
+                "WAIT_CULTURE_SCENE" -> SceneState.current?.let { scene ->
+                    taskStage = ""
+                    showAnswer("Camera view: " + SceneAnswerEngine.answer(scene,
+                        SceneState.capturedAt, "what do you see").text + "\n" +
+                        "I cannot verify this site's exact name from this image. " +
+                        "Point at its entrance sign or tell me the name for sourced history.",
+                        "en-IN")
+                    resultSource.text = "On-device scene cues; site identity unverified"
+                    resultSource.visibility = View.VISIBLE
+                    showSelectedImage()
+                }
+                "WAIT_CULTURE_OCR" -> {
+                    val text = SensorState.getOcrText()
+                    if (text.isNotBlank()) {
+                        val name = text.lineSequence().map { it.trim() }.firstOrNull {
+                            it.length in 8..80 && it.split(Regex("\\s+")).size in 2..9 &&
+                                !Regex("image|photo|picture|appears|looks like|might be|cannot|no text|visible|showing",
+                                    RegexOption.IGNORE_CASE).containsMatchIn(it) && Regex(
+                                "temple|shrine|church|mosque|ക്ഷേത്ര|പള്ളി",
+                                RegexOption.IGNORE_CASE).containsMatchIn(it)
+                        }
+                        if (name != null) {
+                            FeatureState.set("culture", null)
+                            send(TripSensingService.LOOKUP_CULTURE, "locationCloudApproved" to true,
+                                "nameHint" to name)
+                            output.text = "Camera read a possible landmark name. Checking sourced history…"
+                            setStage("WAIT_culture")
+                        } else {
+                            taskStage = ""
+                            val visual = lastVisionDescription.ifBlank {
+                                SceneAnswerEngine.answer(SceneState.current,
+                                    SceneState.capturedAt, "what do you see").text
+                            }
+                            showAnswer("Camera view: $visual\n" +
+                                "I cannot verify this temple's exact name from the image. " +
+                                "Point at its entrance sign or tell me the name for its history. " +
+                                "For Kerala temples generally, follow the posted dress and entry rules. " +
+                                "Source: https://www.keralatourism.org/faq/do-and-donts-in-temples-in-kerala",
+                                "en-IN")
+                            showSelectedImage()
+                        }
+                    } else if (SystemClock.elapsedRealtime() - stageStartedMs > 20_000 &&
+                        lastVisionDescription.isNotBlank()) {
+                        taskStage = ""
+                        showAnswer("Camera view: $lastVisionDescription\n" +
+                            "I cannot verify this temple's exact name from the image. " +
+                            "Point at its entrance sign or tell me the name for its history. " +
+                            "For Kerala temples generally, follow the posted dress and entry rules. " +
+                            "Source: https://www.keralatourism.org/faq/do-and-donts-in-temples-in-kerala",
+                            "en-IN")
+                        showSelectedImage()
+                    }
                 }
                 "WAIT_OCR" -> {
                     val ocr = SensorState.getOcrText()
@@ -1611,10 +1740,23 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 }
                 "WAIT_WEATHER" -> WeatherState.current?.let { weather ->
                     taskStage = ""
-                    val answerText = "${weather.decision}: ${weather.reason}\n" +
-                        "IMD warning: ${weather.officialWarningStatus}\n" +
-                        "Forecast: ${weather.forecastSourceUrl}\nRetrieved: ${formatTime(weather.retrievedAt)}"
+                    val answerText = buildString {
+                        append(if (weather.decision == "ACTION_RECOMMENDED")
+                            "Weather may affect this activity. Confirm the service with the operator."
+                        else if (weather.decision == "NO_ALERT")
+                            "No forecast threshold crossed for this activity window. Confirm the service before boarding."
+                        else "Forecast coverage is incomplete. Check with the operator.")
+                        weather.rainPercent?.let { append("\nPeak rain chance: ${it.toInt()}%") }
+                        weather.gustKmh?.let { append(" · peak wind gust: ${it.toInt()} km/h") }
+                        append("\nIMD Kerala warning: ${weather.officialWarningStatus.replace('_', ' ')}")
+                        append("\nChecked ${formatTime(weather.retrievedAt)}")
+                    }
                     showAnswer(answerText, "en-IN")
+                    showWeatherSources(JSONObject()
+                        .put("forecast_source_url", weather.forecastSourceUrl)
+                        .put("official_warning_source_url", weather.sourceUrl.takeIf {
+                            it != weather.forecastSourceUrl
+                        }), "weather")
                 }
                 "WAIT_SAVE_DESTINATION" -> {
                     val status = SensorState.get("destination")
@@ -1715,6 +1857,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                         if (kind == "transport") showBusAnswer(SensorState.getOcrText(), feature)
                         else showAnswer(answerText, if (kind == "ocr interpretation")
                             codes[language.selectedItemPosition] else "en-IN")
+                        if (kind in setOf("weather", "current weather")) showWeatherSources(feature, kind)
                         if (kind in setOf("ocr interpretation", "transport", "culture")) showSelectedImage()
                         if (kind == "culture") showCultureImage(feature)
                         if (kind == "ocr interpretation")
@@ -1834,6 +1977,27 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             }
         } else if (voiceFlow && !autoConversation) {
             speakBrief(spokenPreview(text))
+        }
+    }
+
+    private fun showWeatherSources(feature: JSONObject, kind: String) {
+        val links = SpannableStringBuilder("Sources: ")
+        fun add(label: String, url: String) {
+            if (url.isBlank() || !url.startsWith("https://")) return
+            if (links.length > "Sources: ".length) links.append(" · ")
+            val start = links.length
+            links.append(label)
+            links.setSpan(android.text.style.URLSpan(url), start, links.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        add("Open-Meteo ${if (kind == "current weather") "conditions" else "forecast"}",
+            feature.optString(if (kind == "current weather") "source_url" else "forecast_source_url"))
+        if (kind == "weather") add("IMD Kerala warning",
+            feature.optString("official_warning_source_url"))
+        if (links.length > "Sources: ".length) {
+            resultSource.text = links
+            resultSource.movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            resultSource.visibility = View.VISIBLE
         }
     }
 
@@ -1987,7 +2151,12 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
     private fun showTransportCandidates(result: JSONObject, boardText: String?): Boolean {
         val candidates = result.optJSONArray("candidates") ?: return false
         if (candidates.length() == 0) return false
-        val place = result.optJSONObject("map_pin")?.optString("label")
+        val first = candidates.optJSONObject(0)
+        val listedStops = first?.optJSONArray("listed_times")?.optJSONObject(0)
+            ?.optJSONArray("ordered_stops")
+        val place = if (listedStops != null && listedStops.length() > 0)
+            listedStops.optString(listedStops.length() - 1).ifBlank { destination }
+        else result.optJSONObject("map_pin")?.optString("label")
             ?.ifBlank { destination } ?: destination
         showAnswer("${candidates.length()} possible private buses to $place. Check the listed direction below.",
             "en-IN")
@@ -1996,7 +2165,6 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
             candidates.optJSONObject(it)?.optString("vehicle_number")?.takeIf { number -> number.isNotBlank() }
         }
         appendResultSection(detail, "VEHICLE NUMBERS", vehicles.joinToString("\n") { "• $it" })
-        val first = candidates.optJSONObject(0)
         val trip = first?.optJSONArray("listed_times")?.optJSONObject(0)
         val ordered = trip?.optJSONArray("ordered_stops")
         val direction = if (ordered != null && ordered.length() > 1)
@@ -2018,7 +2186,11 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         resultDetails.visibility = View.VISIBLE
         val source = result.optString("source_url")
         if (source.isNotBlank()) {
-            resultSource.text = "Private bus data: $source"
+            val link = SpannableStringBuilder("Source: private bus schedule dataset")
+            link.setSpan(android.text.style.URLSpan(source), 8, link.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            resultSource.text = link
+            resultSource.movementMethod = android.text.method.LinkMovementMethod.getInstance()
             resultSource.visibility = View.VISIBLE
         }
         return true
@@ -2029,12 +2201,34 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         try {
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
             imagePreview.setImageBitmap(bitmap)
+            imagePreview.contentDescription = "Selected camera image used for this answer"
             imageCaption.text = VisualEvidenceState.caption + " · Phone capture, this session only"
             imageHolder.visibility = View.VISIBLE
         } finally { bytes.fill(0) }
     }
 
     private fun showCultureImage(result: JSONObject) {
+        val placeImage = result.optString("place_photo_base64")
+        val placeSource = result.optString("place_photo_source_url")
+        if (placeImage.isNotBlank() && placeSource.startsWith("https://maps.google.com/")) {
+            try {
+                val bytes = android.util.Base64.decode(placeImage, android.util.Base64.DEFAULT)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                bytes.fill(0)
+                if (bitmap != null) {
+                    imagePreview.setImageBitmap(bitmap)
+                    imagePreview.contentDescription = "Sourced photo of the possible landmark"
+                    imageCaption.text = "Place photo · Google Maps Places · " +
+                        result.optString("place_photo_attribution").ifBlank { "Photo contributor" }
+                    imageHolder.visibility = View.VISIBLE
+                    button(dynamicControls, "Open cultural photo source") {
+                        host.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(placeSource))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                    return
+                }
+            } catch (_: Exception) { /* Continue to the sourced encyclopedia image. */ }
+        }
         val imageUrl = result.optString("image_url")
         val sourceUrl = result.optString("image_source_url")
         if (!imageUrl.startsWith("https://upload.wikimedia.org/") ||
@@ -2053,6 +2247,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 main.post {
                     if (sessionVisible && bitmap != null) {
                         imagePreview.setImageBitmap(bitmap)
+                        imagePreview.contentDescription = "Sourced photo of the possible landmark"
                         imageCaption.text = "Cultural photo · Wikipedia / Wikimedia Commons\n$sourceUrl"
                         imageHolder.visibility = View.VISIBLE
                     }
@@ -2086,7 +2281,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
         val fallbackUrl = String.format(Locale.US,
             "https://www.openstreetmap.org/export/embed.html?bbox=%.6f%%2C%.6f%%2C%.6f%%2C%.6f&layer=mapnik&marker=%.6f%%2C%.6f",
             lon - 0.035, lat - 0.025, lon + 0.035, lat + 0.025, lat, lon)
-        web.loadUrl(if (mapsUrl.startsWith("https://maps.google.com/")) mapsUrl else fallbackUrl)
+        web.loadUrl(fallbackUrl)
         if (mapsUrl.startsWith("https://maps.google.com/"))
             button(mapHolder, "Open in Google Maps") {
                 host.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(mapsUrl))
@@ -2132,56 +2327,98 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
                 return
             }
             awaitingSpeechReview = false
+            reviewedSpeechSerial++
+            stopSpeech.visibility = View.VISIBLE
             recognizer?.destroy()
             recognizer = null
             SensorState.set("speech playback", "starting reviewed speech")
             send(TripSensingService.SPEAK_REVIEWED_TEXT, "cloudApproved" to true,
                 "approvedText" to text, "language" to reviewLanguage)
             speechConsent.isChecked = false
-            output.text = if (typedConversationMode) "Translation ni loud ga cheptunnanu…"
-                else "Speaking the reviewed answer aloud.\n$text"
             setMicStatus("MIC OFF · Speaking reviewed translation", false)
+            main.removeCallbacks(speechStatusPoll)
+            main.postDelayed(speechStatusPoll, 500)
             if (autoConversation) {
                 nextConversationOwner = if (recordOwner == "TRAVELLER") "LOCAL" else "TRAVELLER"
                 setStage("WAIT_PLAYBACK")
             }
         } else if (speechConsent.isChecked) {
             speechConsent.isChecked = false
-            output.text = "Generating Sarvam speech for this reviewed answer…"
+            val playbackId = ++reviewedSpeechSerial
+            stopSpeech.visibility = View.VISIBLE
+            setMicStatus("MIC OFF · Preparing reviewed speech", false)
             worker.execute {
                 try {
                     val audio = CloudGateway.synthesizeSpeech(text, reviewLanguage)
                     val file = File.createTempFile("yatralens-assistant-", ".wav", host.cacheDir)
                     file.writeBytes(audio)
                     main.post {
-                        if (!sessionVisible) { file.delete(); return@post }
+                        if (!sessionVisible || playbackId != reviewedSpeechSerial) {
+                            file.delete(); return@post
+                        }
                         try {
                             stopSessionSpeech()
                             speechTemp = file
                             speechPlayer = MediaPlayer().apply {
                                 setDataSource(file.absolutePath)
-                                setOnCompletionListener { stopSessionSpeech() }
+                                setOnCompletionListener {
+                                    stopSessionSpeech()
+                                    stopSpeech.visibility = View.GONE
+                                }
                                 prepare()
                                 start()
                             }
-                            output.text = if (typedConversationMode) "Translation ni loud ga cheptunnanu…"
-                                else "Ippudu vinipistunnanu.\n$text"
+                            setMicStatus("MIC OFF · Speaking reviewed translation", false)
                         } catch (_: Exception) {
                             stopSessionSpeech()
+                            stopSpeech.visibility = View.GONE
                             output.text = "Speech playback unavailable; the reviewed text remains visible."
                         }
                     }
                 } catch (_: Exception) {
-                    main.post { if (sessionVisible) output.text = "Sarvam speech unavailable; the reviewed text remains visible." }
+                    main.post { if (sessionVisible && playbackId == reviewedSpeechSerial) {
+                        stopSpeech.visibility = View.GONE
+                        output.text = "Sarvam speech unavailable; the reviewed text remains visible."
+                    } }
                 }
             }
         } else {
             val locale = Locale.forLanguageTag(reviewLanguage)
             if ((tts?.isLanguageAvailable(locale) ?: TextToSpeech.LANG_NOT_SUPPORTED) >= TextToSpeech.LANG_AVAILABLE) {
+                reviewedSpeechSerial++
+                stopSpeech.visibility = View.VISIBLE
                 tts?.language = locale
                 tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "assistant-answer")
             } else output.text = "Local speech is unavailable for this language. The text remains visible."
         }
+    }
+
+    private val speechStatusPoll = object : Runnable {
+        override fun run() {
+            if (!sessionVisible || !::stopSpeech.isInitialized || stopSpeech.visibility != View.VISIBLE) return
+            val status = SensorState.get("speech playback")
+            if (status.startsWith("Finished") || status.startsWith("Stopped") ||
+                status.startsWith("Unavailable") || status == "off") {
+                stopSpeech.visibility = View.GONE
+                return
+            }
+            main.postDelayed(this, 500)
+        }
+    }
+
+    private fun stopReviewedSpeech() {
+        reviewedSpeechSerial++
+        speechSerial++
+        main.removeCallbacks(speechStatusPoll)
+        if (PhysicalContextEngine.situation.value.tripId != null)
+            send(TripSensingService.STOP_SPEECH)
+        try { tts?.stop() } catch (_: Exception) {}
+        stopSessionSpeech()
+        stopSpeech.visibility = View.GONE
+        autoConversation = false
+        nextConversationOwner = "LOCAL"
+        taskStage = ""
+        setMicStatus("MIC OFF · Speech stopped", false)
     }
 
     private fun stopSessionSpeech() {
@@ -2275,7 +2512,7 @@ class YatraVoiceSession(private val host: android.content.Context) : VoiceIntera
 
     private fun isCurrentWeatherRequest(spoken: String): Boolean {
         val lower = spoken.lowercase(Locale.ROOT)
-        if (Regex("\\b(current|now|right now|at the moment|temperature|raining now)\\b")
+        if (Regex("\\b(current|now|right now|at the moment|temperature|raining now|ippudu|prastutam)\\b")
                 .containsMatchIn(lower)) return true
         if (Regex("\\b(boat|ferry|ride|trip|sail|tomorrow|later|tonight)\\b")
                 .containsMatchIn(lower) || weatherStartFromSpeech(spoken) != null) return false

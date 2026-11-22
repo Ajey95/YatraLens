@@ -12,4 +12,5 @@ android/.idea/
 *.jks
 *.keystore
 backend/uvicorn.*.log
+demo-output/
 

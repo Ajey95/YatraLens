@@ -86,7 +86,7 @@ class HomeActivity : Activity() {
             }
         }
         stack.addView(wake)
-        stack.addView(label("Wake audio stays on this phone. The microphone notification stays visible while listening. The assistant pauses on severe heat and during a trip.",
+        stack.addView(label("Wake audio stays on this phone. The microphone notification stays visible while listening. The assistant pauses on critical heat and during a trip.",
             14f, R.color.yl_mist))
         button(stack, "End active trip and stop sensors") {
             startService(Intent(this, TripSensingService::class.java).setAction(TripSensingService.END))

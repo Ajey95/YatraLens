@@ -28,13 +28,14 @@ from backend.app.curated import cultural_lookup, discover
 from backend.app.transport_policy import assess_route
 from backend.app.bus_headsigns import (PLACE_CENTRES, approximate_place_pin,
     headsign_places, indicative_nearby_place, place_map_answer, read_board_place)
-from backend.app.google_places import search_places
+from backend.app.google_places import search_places, place_photo
+from backend.app.vision_fallback import analyze_selected_image, TASKS as VISION_TASKS
 from backend.app.wikipedia_culture import cultural_page
 from backend.app.private_bus_reference import WEB_APP_URL, lookup_private_bus
 from backend.app.agreement_policy import propose_agreements
 from backend.app.scan_policy import scan_cues
 from backend.app.imd_warning import SOURCE_URL as IMD_KERALA_URL, parse_kerala_warning, combine_with_forecast, in_alappuzha_pilot
-from backend.app.assistant_plan import SuggestedIntent, finalize_plan
+from backend.app.assistant_plan import SuggestedIntent, fallback_suggestion, finalize_plan
 
 
 def load_local_env() -> None:
@@ -251,6 +252,8 @@ async def assistant_plan(payload: AssistantPlanRequest, _: None = Depends(requir
             "max_tokens": 800, "response_format": {"type": "json_schema",
             "json_schema": {"name": "yatralens_task", "strict": True,
                             "schema": ASSISTANT_INTENT_SCHEMA}}}
+    planner_name = "sarvam-105b"
+    planner_warning = None
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(f"{SARVAM}/v1/chat/completions", json=body,
@@ -258,10 +261,13 @@ async def assistant_plan(payload: AssistantPlanRequest, _: None = Depends(requir
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             suggestion = SuggestedIntent.model_validate_json(content)
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-        raise upstream_error(exc) from exc
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        suggestion = fallback_suggestion(payload.utterance)
+        planner_name = "local-rule-fallback"
+        planner_warning = "Sarvam planning was unavailable; a local request match was used."
     plan = finalize_plan(payload.utterance, payload.follow_up_answer, suggestion)
-    return {**plan, "model": "sarvam-105b", "user_request": payload.utterance,
+    return {**plan, "model": planner_name, "planner_warning": planner_warning,
+            "user_request": payload.utterance,
             "requires_action_confirmation": True}
 
 
@@ -446,6 +452,17 @@ async def culture_lookup(payload: PlaceLookupRequest, _: None = Depends(require_
                               "longitude": place["longitude"], "precision": "Google Maps place pin"},
                   "visitor_rules": None, "opening_status": "UNKNOWN",
                   "reason": "Confirm the site name. Visitor rules and hours are not verified."}
+        if place.get("photo_name"):
+            try:
+                encoded = await place_photo(place["photo_name"])
+                if encoded:
+                    result["place_photo_base64"] = encoded
+                    result["place_photo_source_url"] = place["source_url"]
+                    result["place_photo_attribution"] = ", ".join(
+                        entry.get("displayName", "") for entry in place.get("photo_attributions", [])
+                        if entry.get("displayName"))[:160]
+            except (httpx.HTTPError, ValueError):
+                pass
     try:
         page = await cultural_page(result["name"])
     except (httpx.HTTPError, requests.RequestException, ValueError):
@@ -578,6 +595,8 @@ async def translate(payload: TranslationRequest, _: None = Depends(require_auth)
                          payload.target_language_code == "te-IN" and
                          payload.output_script == "roman")
     if tengglish or reverse_tengglish:
+        translation_model = "sarvam-105b"
+        fallback_flags: list[str] = []
         direction = ("Translate Malayalam travel speech into romanized Telugu-English "
                      "(Tengglish). Preserve exact meaning, uncertainty, numbers, times and names. "
                      "Keep numerals exactly as given. Return only the translation."
@@ -603,8 +622,27 @@ async def translate(payload: TranslationRequest, _: None = Depends(require_auth)
                 translated = json.loads(content)["translation"]
                 if not isinstance(translated, str) or not translated.strip():
                     raise ValueError("Empty Tengglish translation")
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-            raise upstream_error(exc) from exc
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+            # The reasoning endpoint sometimes returns incomplete JSON. Keep the
+            # reviewed turn usable through Sarvam's translation endpoint.
+            fallback_body = {"input": payload.text,
+                             "source_language_code": payload.source_language_code,
+                             "target_language_code": payload.target_language_code,
+                             "model": "mayura:v1"}
+            if reverse_tengglish:
+                fallback_body["output_script"] = "roman"
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    fallback = await client.post(f"{SARVAM}/translate", json=fallback_body,
+                                                 headers={"api-subscription-key": key})
+                    fallback.raise_for_status()
+                    translated = fallback.json()["translated_text"]
+                    if not isinstance(translated, str) or not translated.strip():
+                        raise ValueError("Empty fallback translation")
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                raise upstream_error(exc) from exc
+            translation_model = "mayura:v1"
+            fallback_flags.append("TENGGLISH_TRANSLATION_REVIEW_BEFORE_SPEAKING")
         format_flags: list[str] = []
         if tengglish:
             translated = re.sub(r"^(?:മലയാളം|Malayalam)\s*[:：]\s*", "", translated,
@@ -646,9 +684,10 @@ async def translate(payload: TranslationRequest, _: None = Depends(require_auth)
         return {"original": payload.text, "translated_text": translated.strip(),
                 "source_language_code": payload.source_language_code,
                 "target_language_code": payload.target_language_code, "provider": "Sarvam",
-                "model": "sarvam-105b", "output_script": payload.output_script,
+                "model": translation_model, "output_script": payload.output_script,
                 "translated_at": now_utc(),
-                "review_flags": translation_review_flags(payload.text, translated) + format_flags}
+                "review_flags": translation_review_flags(payload.text, translated) +
+                                format_flags + fallback_flags}
     model = "mayura:v1" if payload.output_script else "sarvam-translate:v1"
     body = {"input": payload.text, "source_language_code": payload.source_language_code,
             "target_language_code": payload.target_language_code, "model": model}
@@ -728,7 +767,7 @@ async def indic_ocr(file: Annotated[UploadFile, File()],
     """Parse a user-selected document-like text crop; street-scene quality is unverified."""
     if purpose != "selected_text_crop":
         raise HTTPException(status_code=422, detail="Only a selected text crop is accepted")
-    key = sarvam_key()
+    key = os.environ.get("SARVAM_API_KEY", "").strip()
     image = await file.read(8_000_001)
     if not image or len(image) > 8_000_000:
         raise HTTPException(status_code=413, detail="Image must be nonempty and under 8 MB")
@@ -738,6 +777,23 @@ async def indic_ocr(file: Annotated[UploadFile, File()],
         mime, extension = "image/png", "png"
     else:
         raise HTTPException(status_code=415, detail="Only actual JPEG or PNG bytes are accepted")
+    async def fallback_ocr() -> dict[str, Any]:
+        result = await analyze_selected_image(image, mime, "text")
+        lines = [line.strip() for line in result["visible_text"] if line.strip()]
+        return {"status": "COMPLETED" if lines else "NO_TEXT",
+                "provider": result["provider"], "model": result["model"],
+                "language": language, "job_id": None,
+                "image_sha256": hashlib.sha256(image).hexdigest(),
+                "processed_at": now_utc(), "scene_text_quality": "OpenAI vision; review against photo",
+                "text": "\n".join(lines), "spans": [{"text": line} for line in lines]}
+    try:
+        primary = await fallback_ocr()
+        if primary["text"].strip():
+            return primary
+    except (httpx.HTTPError, ValueError, RuntimeError):
+        pass
+    if not key:
+        raise HTTPException(status_code=503, detail="Visual OCR providers are unavailable")
     headers = {"api-subscription-key": key}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -763,9 +819,17 @@ async def indic_ocr(file: Annotated[UploadFile, File()],
             result.raise_for_status()
             parsed = result.json()
     except (httpx.HTTPError, ValueError, KeyError) as exc:
-        raise upstream_error(exc) from exc
+        try:
+            return await fallback_ocr()
+        except (httpx.HTTPError, ValueError, RuntimeError):
+            raise upstream_error(exc) from exc
     documents = parsed.get("documents", [])
     spans = collect_ocr_spans(documents)
+    if not spans or len("".join(span["text"] for span in spans).strip()) < 5:
+        try:
+            return await fallback_ocr()
+        except (httpx.HTTPError, ValueError, RuntimeError):
+            pass
     return {"status": "COMPLETED" if spans else "NO_TEXT", "provider": "Sarvam Document AI",
             "model": "sarvam-vision-v1", "language": language,
             "job_id": job_id, "image_sha256": hashlib.sha256(image).hexdigest(),
@@ -773,4 +837,25 @@ async def indic_ocr(file: Annotated[UploadFile, File()],
             "text": "\n".join(span["text"] for span in spans), "spans": spans,
             "documents": documents, "usage": parsed.get("usage", {}),
             "provider_status": parsed.get("status")}
+
+
+@app.post("/v1/vision/analyze")
+async def vision_analyze(file: Annotated[UploadFile, File()],
+                         task: Annotated[str, Form()],
+                         question: Annotated[str, Form()] = "",
+                         _: None = Depends(require_auth),
+                         __: None = Depends(require_cloud_consent)) -> dict[str, Any]:
+    if task not in VISION_TASKS or len(question) > 500:
+        raise HTTPException(status_code=422, detail="Unknown selected visual task")
+    image = await file.read(8_000_001)
+    if not image or len(image) > 8_000_000:
+        raise HTTPException(status_code=413, detail="Selected frame must be under 8 MB")
+    mime = "image/jpeg" if image.startswith(b"\xff\xd8\xff") else (
+        "image/png" if image.startswith(b"\x89PNG\r\n\x1a\n") else "")
+    if not mime:
+        raise HTTPException(status_code=415, detail="Only JPEG or PNG frames are accepted")
+    try:
+        return await analyze_selected_image(image, mime, task, question)
+    except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+        raise upstream_error(exc) from exc
 

@@ -74,6 +74,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
         const val SAVE_TRANSCRIPT = "com.yatralens.SAVE_TRANSCRIPT"
         const val SPEAK_TRANSLATION = "com.yatralens.SPEAK_TRANSLATION"
         const val SPEAK_REVIEWED_TEXT = "com.yatralens.SPEAK_REVIEWED_TEXT"
+        const val STOP_SPEECH = "com.yatralens.STOP_SPEECH"
         const val TRANSLATE_TYPED = "com.yatralens.TRANSLATE_TYPED"
         const val PLAN_ASSISTANT_TEXT = "com.yatralens.PLAN_ASSISTANT_TEXT"
         const val CHECK_WEATHER = "com.yatralens.CHECK_WEATHER"
@@ -152,6 +153,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private var focusRequest: AudioFocusRequest? = null
     private var resumeMicAfterPlayback = false
     private var speechPreparing = false
+    private var speechGeneration = 0L
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -240,6 +242,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 intent.getBooleanExtra("reviewed", true))
             SPEAK_TRANSLATION -> speakTranslation(intent)
             SPEAK_REVIEWED_TEXT -> speakReviewedText(intent)
+            STOP_SPEECH -> stopReviewedSpeech()
             TRANSLATE_TYPED -> translateTyped(intent)
             PLAN_ASSISTANT_TEXT -> planAssistantText(intent)
             CHECK_WEATHER -> checkWeather(intent)
@@ -1085,6 +1088,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     }
 
     private fun synthesizeAndPlay(approvedText: String, language: String, turnId: Long?) {
+        val generation = ++speechGeneration
         val shouldResume = micWanted && micRunning
         speechPreparing = true
         resumeMicAfterPlayback = shouldResume
@@ -1098,7 +1102,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 val file = File.createTempFile("yatralens-speech-", ".wav", cacheDir)
                 try { file.writeBytes(audio) } finally { audio.fill(0) }
                 main.post {
-                    if (!activeTrip) { file.delete(); return@post }
+                    if (!activeTrip || generation != speechGeneration) { file.delete(); return@post }
                     speechPreparing = false
                     if (turnId != null && ConversationState.current?.id != turnId) {
                         file.delete()
@@ -1109,6 +1113,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 }
             } catch (e: Exception) {
                 main.post {
+                    if (generation != speechGeneration) return@post
                     speechPreparing = false
                     SensorState.set("speech playback", "Unavailable: ${e.message ?: e.javaClass.simpleName}")
                     store.record("SPEECH_FAILED", e.javaClass.simpleName)
@@ -1116,6 +1121,16 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
                 }
             }
         }, "YatraLensSarvamSpeech").start()
+    }
+
+    private fun stopReviewedSpeech() {
+        speechGeneration++
+        speechPreparing = false
+        if (player != null) finishPlayback("Stopped by user")
+        else {
+            SensorState.set("speech playback", "Stopped by user")
+            restoreMicAfterPlayback()
+        }
     }
 
     private fun playAudio(file: File, language: String) {
@@ -1533,6 +1548,7 @@ class TripSensingService : LifecycleService(), SensorEventListener, LocationList
     private fun endTrip() {
         if (!activeTrip) { stopSelf(); return }
         activeTrip = false
+        speechGeneration++
         speechPreparing = false
         resumeMicAfterPlayback = false
         finishPlayback("off")

@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import os
+import base64
+import re
 from math import asin, cos, radians, sin, sqrt
 
 import httpx
 
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
-FIELD_MASK = "places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri,places.primaryType"
+FIELD_MASK = ("places.id,places.displayName,places.formattedAddress,places.location,"
+              "places.googleMapsUri,places.primaryType,places.photos.name,"
+              "places.photos.authorAttributions")
+
+
+async def place_photo(photo_name: str) -> str | None:
+    """Return one bounded public Places photo without exposing the Maps key to the phone."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    if not key or not re.fullmatch(r"places/[^/]+/photos/[^/]+", photo_name):
+        return None
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        response = await client.get(f"https://places.googleapis.com/v1/{photo_name}/media",
+                                    params={"maxWidthPx": 640},
+                                    headers={"X-Goog-Api-Key": key})
+        response.raise_for_status()
+        if response.headers.get("content-type", "").split(";")[0] not in ("image/jpeg", "image/png"):
+            return None
+        if not response.content or len(response.content) > 1_000_000:
+            return None
+        return base64.b64encode(response.content).decode("ascii")
 
 
 def distance_km(lat: float, lon: float, other_lat: float, other_lon: float) -> float:
@@ -48,6 +69,8 @@ async def search_places(query: str, lat: float | None, lon: float | None, *, cou
                        "latitude": place_lat, "longitude": place_lon,
                        "distance_km": round(distance, 1) if distance is not None else None,
                        "primary_type": item.get("primaryType"),
+                       "photo_name": ((item.get("photos") or [{}])[0]).get("name", ""),
+                       "photo_attributions": ((item.get("photos") or [{}])[0]).get("authorAttributions", []),
                        "source_url": item.get("googleMapsUri", ""),
                        "source_owner": "Google Maps Places"})
     return result

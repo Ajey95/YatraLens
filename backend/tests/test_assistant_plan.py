@@ -37,6 +37,17 @@ def test_current_weather_request_cannot_be_misrouted_to_scene():
     assert plan["action"] == "OPEN_WEATHER"
 
 
+def test_clear_scene_request_overrides_wrong_sensor_action():
+    wrong = SuggestedIntent(feature="F13", destination="", follow_up_question="",
+                            action="OPEN_SENSOR_CONTROLS")
+    assert finalize_plan("What do you see in front of me?", None, wrong)["action"] == "CAPTURE_SCENE"
+
+
+def test_saved_operator_promise_routes_to_memory_instead_of_new_conversation():
+    wrong = SuggestedIntent(feature="F02", destination="", follow_up_question="")
+    assert finalize_plan("What did the operator promise?", None, wrong)["action"] == "OPEN_MEMORY"
+
+
 def test_general_question_never_starts_camera_from_model_guess():
     wrong = SuggestedIntent(feature="F01", destination="", follow_up_question="")
     plan = finalize_plan("Can you help plan my afternoon?", None, wrong)

@@ -31,29 +31,46 @@ ALLOWED_ACTIONS = {feature: {action} for feature, action in ACTION_FOR.items()}
 ALLOWED_ACTIONS["F06"] = {"CAPTURE_BUS_BOARD", "SHOW_BUS_MAP"}
 
 
+def fallback_suggestion(request: str) -> SuggestedIntent:
+    """Route a clear request locally if the remote planner returns no usable JSON."""
+    lower = request.casefold()
+    cues = (
+        ("F05", ("weather", "rain", "temperature", "forecast", "മഴ", "వాతావరణ", "मौसम")),
+        ("F06", ("bus", "ksrtc", "ബസ്", "బస్స", "बस")),
+        ("F12", ("coir", "craft", "artisan", "shop", "local market", "handicraft", "workshop")),
+        ("F07", ("temple", "church", "mosque", "palace", "museum", "history", "culture",
+                  "architecture", "customs")),
+        ("F09", ("conflict", "changed boarding", "different boarding", "disagree")),
+        ("F08", ("memory", "remember", "promise", "saved detail", "fare said")),
+        ("F02", ("talk to", "talk with", "conversation", "translate", "operator", "local person",
+                  "conductor")),
+        ("F11", ("offline", "emergency", "no internet", "helpline")),
+        ("F10", ("accessibility", "talkback", "large text")),
+        ("F13", ("sensor", "microphone status", "camera status")),
+        ("F04", ("booking", "where am i", "saved jetty", "my location",
+                  "boarding point", "save this place", "save this point", "save cheyyi")),
+        ("F03", ("read", "sign", "notice", "ocr", "written text")),
+        ("F01", ("see", "look at", "point", "camera", "in front of me", "what is this")),
+    )
+    feature = next((feature for feature, words in cues if any(word in lower for word in words)),
+                   "UNKNOWN")
+    return SuggestedIntent(feature=feature, destination="", follow_up_question="",
+                           action=ACTION_FOR[feature], requires_camera=False,
+                           decision_reason="Local routing after the remote planner returned no usable result")
+
+
 def finalize_plan(request: str, follow_up_answer: str | None, suggestion: SuggestedIntent) -> dict:
     feature = suggestion.feature
     request_lower = request.casefold()
+    explicit_feature = fallback_suggestion(request).feature
+    if explicit_feature != "UNKNOWN":
+        feature = explicit_feature
     answer = (follow_up_answer or "").strip()
     visual_terms = ("point", "camera", "photo", "picture", "look at", "in front of me",
                     "what is this", "what's this", "scan", "this sign", "this board",
                     "this bus", "that bus", "this temple", "that temple")
     visual_request = any(term in request_lower for term in visual_terms)
-    # Deterministic task cues override a mistaken model label before sensors start.
-    if any(marker in request_lower for marker in ("weather", "temperature", "raining now", "മഴ", "వాతావరణ", "मौसम")):
-        feature = "F05"
-    elif any(marker in request_lower for marker in ("bus", "ബസ്", "బస్స", "बस")):
-        feature = "F06"
-    elif any(marker in request_lower for marker in ("talk to", "talk with", "translate", "conversation",
-                                                   "local person", "operator", "conductor")) and not any(
-            marker in request_lower for marker in ("read", "notice", "sign")):
-        feature = "F02"
-    elif any(marker in request_lower for marker in ("shop", "artisan", "handicraft", "craft workshop",
-                                                   "local market", "coir craft")):
-        feature = "F12"
-    elif any(marker in request_lower for marker in ("temple", "church", "mosque", "palace",
-                                                   "museum", "history", "architecture", "customs")):
-        feature = "F07"
+    # Clear task cues override a mistaken model label before sensors start.
     destination = suggestion.destination.strip()
     # A route destination is a traveller-stated slot, never an LLM invention.
     if feature == "F06":
