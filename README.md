@@ -126,7 +126,9 @@ These are real captures from the Android phone. The conversation screen uses a *
 | ![Google Maps Places temple photo and attribution](docs/screenshots/sourced-place-photo.png) | ![Marari Beach destination pin with OpenStreetMap attribution](docs/screenshots/route-map.png) | ![Local shop candidate with source link and map pin](docs/screenshots/discovery-map.png) |
 | [Place photo and attribution](docs/screenshots/sourced-place-photo.png) | [Destination pin and map source](docs/screenshots/route-map.png) | [Shop source and map](docs/screenshots/discovery-map.png) |
 
-**[Prototype demo video](docs/demo/YatraLens-prototype-demo.mp4)** (3–4 minutes): recorded phone flows with chapter cards covering F01–F13. The cards explicitly identify paths that have not passed a full live check. The local-person Malayalam turn is synthetic typed input; the app translates and speaks both sides.
+**F01 Point & Ask:** [live camera frame, scene answer and selected image](docs/screenshots/point-ask.png). The printed ferry notice was a controlled demo target.
+
+**[Prototype demo video](docs/demo/YatraLens-prototype-demo.mp4)** (4:08): recorded phone flows with chapter cards covering F01–F13. F01 now shows its live phone camera frame and answer. The cards explicitly identify paths that have not passed a full live check. The local-person Malayalam turn is synthetic typed input; the app translates and speaks both sides.
 
 ## Tech stack
 
